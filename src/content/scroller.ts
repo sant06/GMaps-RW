@@ -22,24 +22,63 @@ export class MapsVirtualScroller {
   }
 
   /**
-   * Locates Google Maps virtualized container using semantic ARIA attributes.
+   * Locates Google Maps virtualized container using multi-level heuristic detection.
    */
   public findPrimaryContainer(): HTMLElement | null {
-    const candidates = [
-      'div[role="feed"]',
-      'div[role="main"] div[tabindex="-1"]',
-      'div[aria-label][role="region"]',
-      'div.m6QErb.DxyBCb', // Secondary legacy fallback
-    ];
-
-    for (const selector of candidates) {
-      const el = document.querySelector<HTMLElement>(selector);
-      if (el && el.scrollHeight > el.clientHeight) {
-        return el;
+    // 1. If any place links exist in the DOM, find their scrollable ancestor
+    const sampleLink = document.querySelector<HTMLElement>('a[href*="/maps/place/"], a[href*="/place/"]');
+    if (sampleLink) {
+      let parent = sampleLink.parentElement;
+      while (parent && parent !== document.body && parent !== document.documentElement) {
+        const isScrollable = parent.scrollHeight > parent.clientHeight && parent.clientHeight > 100;
+        if (isScrollable) {
+          return parent;
+        }
+        parent = parent.parentElement;
       }
     }
 
-    return document.querySelector<HTMLElement>('div[role="feed"]');
+    // 2. Try known Google Maps container selectors
+    const candidates = [
+      'div[role="feed"]',
+      'div.m6QErb[aria-label]',
+      'div.m6QErb.DxyBCb',
+      'div.m6QErb',
+      'div[role="main"] div[tabindex="-1"]',
+      'div[role="region"][aria-label]',
+      'div[role="region"]',
+      'div#pane div[tabindex="-1"]',
+      'div.widget-pane-content',
+      'div.section-layout',
+    ];
+
+    for (const selector of candidates) {
+      const elements = document.querySelectorAll<HTMLElement>(selector);
+      for (const el of elements) {
+        if (el.scrollHeight > el.clientHeight && el.clientHeight > 150) {
+          return el;
+        }
+      }
+    }
+
+    // 3. Fallback: Search all scrollable elements in the left panel / side drawer
+    const allDivs = document.querySelectorAll<HTMLElement>('div');
+    for (const div of allDivs) {
+      if (div.clientHeight > 200 && div.scrollHeight > div.clientHeight + 80) {
+        const rect = div.getBoundingClientRect();
+        // Check if placed in the left-hand panel area (where list items live)
+        if (rect.left < window.innerWidth * 0.6 && rect.width > 200) {
+          return div;
+        }
+      }
+    }
+
+    // 4. If elements with place links exist anywhere, use their direct container
+    if (sampleLink?.parentElement) {
+      return sampleLink.parentElement;
+    }
+
+    return null;
   }
 
   public setContainer(el: HTMLElement): void {
@@ -62,9 +101,21 @@ export class MapsVirtualScroller {
   ): Promise<ScrapedPlaceRecord[]> {
     if (!this.container) {
       this.container = this.findPrimaryContainer();
-      if (!this.container) {
-        throw new Error('Google Maps scrolling container (role="feed") not found in active document.');
+    }
+
+    // If still not found, attempt to open the Saved panel automatically
+    if (!this.container) {
+      const opened = await this.tryAutoOpenSavedPanel();
+      if (opened) {
+        await this.rateLimiter.sleep(1200);
+        this.container = this.findPrimaryContainer();
       }
+    }
+
+    if (!this.container) {
+      throw new Error(
+        'No active list panel found in Google Maps. Please open your Saved List (in Google Maps: click Menu ☰ -> Saved / Guardados -> select your list) and try again.'
+      );
     }
 
     let stagnationCycles = 0;
@@ -135,13 +186,35 @@ export class MapsVirtualScroller {
   }
 
   /**
-   * Scans currently mounted DOM nodes within the virtualized feed.
+   * Attempts to locate and click the 'Saved' / 'Guardados' tab button in Google Maps navigation.
+   */
+  private async tryAutoOpenSavedPanel(): Promise<boolean> {
+    const savedSelectors = [
+      'button[aria-label*="Saved" i]',
+      'button[aria-label*="Guardados" i]',
+      'button[data-tooltip*="Saved" i]',
+      'button[data-tooltip*="Guardados" i]',
+      'button[data-item-id="YOUR_PLACES"]',
+      'button[data-item-id*="saved" i]',
+    ];
+
+    for (const sel of savedSelectors) {
+      const btn = document.querySelector<HTMLElement>(sel);
+      if (btn) {
+        btn.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Scans currently mounted DOM nodes within the container.
    */
   public harvestVisibleElements(): ScrapedPlaceRecord[] {
-    if (!this.container) return [];
-
+    const root = this.container || document;
     const newlyAdded: ScrapedPlaceRecord[] = [];
-    const anchors = this.container.querySelectorAll<HTMLAnchorElement>('a[href*="/maps/place/"]');
+    const anchors = root.querySelectorAll<HTMLAnchorElement>('a[href*="/maps/place/"], a[href*="/place/"]');
 
     anchors.forEach((anchor) => {
       const url = anchor.href;
@@ -161,13 +234,12 @@ export class MapsVirtualScroller {
         generateSyntheticPlaceId(title, parsedCoords.latitude, parsedCoords.longitude);
 
       if (!this.harvestedMap.has(id)) {
-        // Extract note if present in adjacent or sibling container
         const cardParent = anchor.closest('div[jsaction], div[role="article"]') || anchor.parentElement;
         const noteEl = cardParent?.querySelector('div[data-note], [aria-label*="note" i], span[class*="note" i]');
         const userNote = noteEl?.textContent?.trim() || undefined;
 
-        // Check if closed
-        const isClosed = cardParent?.textContent?.includes('Permanently closed') ||
+        const isClosed =
+          cardParent?.textContent?.includes('Permanently closed') ||
           cardParent?.textContent?.includes('Temporarily closed') ||
           false;
 
@@ -180,6 +252,7 @@ export class MapsVirtualScroller {
           isHighPrecision: parsedCoords.isHighPrecision,
           placeId: parsedCoords.placeId,
           featureId: parsedCoords.featureId,
+          cid: parsedCoords.cid,
           userNote,
           isClosed,
           operationalStatus: isClosed ? 'Permanently closed' : 'Operational',

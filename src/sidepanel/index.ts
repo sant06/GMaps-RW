@@ -178,6 +178,10 @@ function handleWorkerMessage(msg: WorkerToSidePanelMessage): void {
 
     case 'LOG_ENTRY':
       logEntry(msg.payload.level, `[${msg.payload.tag}] ${msg.payload.message}`);
+      if (msg.payload.level === 'error') {
+        resetExtractionUiState();
+        resetMutationUiState();
+      }
       break;
   }
 }
