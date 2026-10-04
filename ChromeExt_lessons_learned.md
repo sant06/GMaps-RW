@@ -337,6 +337,41 @@ La inspección visual reveló que el usuario se encontraba en la **vista del map
 > 2. **Prohibición de "Falsos Éxitos":** Si la extracción termina con 0 lugares, el sistema nunca debe emitir un mensaje de `SUCCESS` ni afirmar que se completó con éxito. Debe disparar una advertencia clara (`EMPTY`) notificándole al usuario que debe abrir su lista de lugares guardados para que los pines existan en el DOM.
 > 3. **Guía de Navegación Clara al Usuario:** En aplicaciones complejas con renderizado híbrido (WebGL + DOM), la extensión debe educar al usuario: explicarle claramente que los pines visibles en el mapa gráfico pertenecen a una lista guardada y que debe abrir el panel de esa lista (Guardados 🔖) para que el motor pueda extraer los datos.
 
+---
+
+## 15. Hidratación Accesible por Foco Teclado (`a11y focusin`) como Bypass Determinístico a Eventos Sintéticos `isTrusted: false`
+
+### Síntoma / Error
+Al intentar forzar la hidratación perezosa (*lazy hydration*) de URLs dinámicas con coordenadas (`!3d/!4d`) mediante eventos de ratón programáticos (`MouseEvent('mouseover')`, `PointerEvent('pointerenter')`), la SPA del host (Google Maps) ignoraba las llamadas y los enlaces permanecían incompletos.
+El usuario reportaba que la extensión *"parecía requerir que hiciera hover físico con la mano sobre el pin para registrarlo"*, lo que impedía una extracción 100% autónoma y desatendida.
+
+### Causa Raíz
+1. **La barrera de seguridad `event.isTrusted: false`:**
+   En las APIs modernas del DOM de Chromium, todo evento instanciado programáticamente (`new MouseEvent(...)` o `element.dispatchEvent(...)`) lleva indeleblemente la propiedad de solo lectura `event.isTrusted === false`.
+2. **Defensas internas contra scraping y clickjacking:**
+   Los frameworks de páginas web complejas (Google Closure, Angular, React) implementan guardas internas en sus despachadores de puntero:
+   - Validan si `event.isTrusted === true`.
+   - Comprueban si las coordenadas de pantalla provienen del hardware del sistema operativo.
+   Si detectan un evento artificial de ratón, descartan la ejecución de microtareas de precarga o navegación para protegerse de bots y clics fantasmas.
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **El Canal de Accesibilidad (W3C/WCAG) como Vector Inmune a las Restricciones de Puntero**:
+> 1. **La Obligación Legal y Arquitectónica de Accesibilidad:** Por normativas internacionales de accesibilidad web (WCAG 2.1 y directivas ARIA), ninguna aplicación de producción puede impedir que un usuario navegue y active elementos exclusivamente con el teclado (pulsando `Tab` / `Shift+Tab`) o mediante lectores de pantalla asistivos.
+> 2. **Por qué el Foco no puede descartarse:** La navegación por teclado **carece de coordenadas físicas de ratón por definición**. En consecuencia, cuando un enlace recibe foco, los escuchadores de accesibilidad de la aplicación están obligados a preparar e hidratar inmediatamente el destino canónico (`href`), sin poder exigir un puntero de ratón físico.
+> 3. **Patrón de Hidratación Autónoma Universal:**
+>    Para forzar a una SPA a hidratar datos dinámicos sin depender del cursor humano ni lidiar con las trabas de `isTrusted` en eventos de puntero:
+>    ```ts
+>    // Localizar el ancla interactiva de la tarjeta
+>    const anchor = card.querySelector<HTMLAnchorElement>('a.hfpxzc, a[href*="/place/"]');
+>    if (anchor) {
+>      anchor.focus(); // Foco nativo del navegador
+>      anchor.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+>    }
+>    ```
+>    Este enfoque garantiza que los atributos de destino se pueblen de forma determinística en el DOM, permitiendo una extracción 100% autónoma y manos libres.
+
+
 
 
 
