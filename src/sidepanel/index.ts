@@ -66,9 +66,10 @@ const inputMaxDelay = document.getElementById('setting-max-delay') as HTMLInputE
 const inputCooling = document.getElementById('setting-cooling-interval') as HTMLInputElement;
 const btnSaveSettings = document.getElementById('btn-save-settings') as HTMLButtonElement;
 
-// Audit log terminal
+// Audit log terminal & Action Banner
 const elLogTerminal = document.getElementById('log-terminal');
 const btnClearLogs = document.getElementById('btn-clear-logs');
+const elLiveActionText = document.getElementById('live-action-text');
 
 // ============================================================================
 // TAB NAVIGATION
@@ -147,14 +148,23 @@ function handleWorkerMessage(msg: WorkerToSidePanelMessage): void {
     case 'TAB_CONNECTION_CHANGED':
       updateConnectionStatus(msg.payload.connected);
       if (elTabBadge) {
-        elTabBadge.textContent = msg.payload.connected ? 'Google Maps Active' : 'No Maps Tab';
+        elTabBadge.textContent = msg.payload.connected ? 'Google Maps Conectado' : 'Sin Conexión (Presiona F5)';
+        elTabBadge.className = msg.payload.connected ? 'badge text-success' : 'badge text-warning';
+      }
+      if (elLiveActionText && !msg.payload.connected) {
+        elLiveActionText.textContent = 'Google Maps desconectado. Abre o recarga (F5) la pestaña de Maps.';
+        elLiveActionText.style.color = 'var(--accent-amber)';
       }
       break;
 
     case 'STATE_SNAPSHOT':
       if (elAuthStatus) {
-        elAuthStatus.textContent = msg.payload.authCaptured ? 'Captured (Active)' : 'Unintercepted';
+        elAuthStatus.textContent = msg.payload.authCaptured ? 'Capturado (Activo)' : 'No interceptado';
         elAuthStatus.className = msg.payload.authCaptured ? 'value text-success' : 'value text-warning';
+      }
+      if (elTabBadge) {
+        elTabBadge.textContent = msg.payload.activeTabConnected ? 'Google Maps Conectado' : 'Sin Conexión (Presiona F5)';
+        elTabBadge.className = msg.payload.activeTabConnected ? 'badge text-success' : 'badge text-warning';
       }
       if (msg.payload.harvestedItemsCount > 0) {
         if (elMetricHarvested) elMetricHarvested.textContent = String(msg.payload.harvestedItemsCount);
@@ -210,6 +220,10 @@ function handleWorkerMessage(msg: WorkerToSidePanelMessage): void {
 
     case 'OPERATION_FINISHED':
       logEntry('info', `Completed: ${msg.payload.message}`);
+      if (elLiveActionText) {
+        elLiveActionText.textContent = msg.payload.message;
+        elLiveActionText.style.color = msg.payload.success ? 'var(--accent-green)' : 'var(--accent-amber)';
+      }
       if (msg.payload.operation === 'extraction') {
         resetExtractionUiState();
       } else {
@@ -219,6 +233,15 @@ function handleWorkerMessage(msg: WorkerToSidePanelMessage): void {
 
     case 'LOG_ENTRY':
       logEntry(msg.payload.level, `[${msg.payload.tag}] ${msg.payload.message}`);
+      if (elLiveActionText) {
+        elLiveActionText.textContent = msg.payload.message;
+        elLiveActionText.style.color =
+          msg.payload.level === 'error'
+            ? 'var(--accent-red)'
+            : msg.payload.level === 'warn'
+              ? 'var(--accent-amber)'
+              : '#93c5fd';
+      }
       if (msg.payload.level === 'error') {
         resetExtractionUiState();
         resetMutationUiState();
@@ -279,6 +302,10 @@ btnStartExtract?.addEventListener('click', () => {
     btnPauseExtract.textContent = 'Pause';
   }
   if (btnAbortExtract) btnAbortExtract.disabled = false;
+  if (elLiveActionText) {
+    elLiveActionText.textContent = `Iniciando extracción (${mode})...`;
+    elLiveActionText.style.color = '#93c5fd';
+  }
   logEntry('info', `Dispatched extraction start command (mode: ${mode}).`);
 });
 
@@ -286,10 +313,12 @@ btnPauseExtract?.addEventListener('click', () => {
   if (btnPauseExtract.textContent === 'Pause') {
     backgroundPort?.postMessage({ type: 'REQUEST_PAUSE_EXTRACTION' } as SidePanelToWorkerMessage);
     btnPauseExtract.textContent = 'Resume';
+    if (elLiveActionText) elLiveActionText.textContent = 'Extracción pausada.';
     logEntry('warn', 'Extraction paused.');
   } else {
     backgroundPort?.postMessage({ type: 'REQUEST_RESUME_EXTRACTION' } as SidePanelToWorkerMessage);
     btnPauseExtract.textContent = 'Pause';
+    if (elLiveActionText) elLiveActionText.textContent = 'Extracción reanudada.';
     logEntry('info', 'Extraction resumed.');
   }
 });
@@ -297,6 +326,10 @@ btnPauseExtract?.addEventListener('click', () => {
 btnAbortExtract?.addEventListener('click', () => {
   backgroundPort?.postMessage({ type: 'REQUEST_ABORT_EXTRACTION' } as SidePanelToWorkerMessage);
   resetExtractionUiState();
+  if (elLiveActionText) {
+    elLiveActionText.textContent = 'Extracción cancelada por el usuario.';
+    elLiveActionText.style.color = 'var(--accent-amber)';
+  }
   logEntry('error', 'Extraction aborted by user.');
 });
 
@@ -308,6 +341,10 @@ function resetExtractionUiState(): void {
     btnPauseExtract.textContent = 'Pause';
   }
   if (btnAbortExtract) btnAbortExtract.disabled = true;
+  if (elLiveActionText && !elLiveActionText.textContent?.includes('Error') && !elLiveActionText.textContent?.includes('No')) {
+    elLiveActionText.textContent = 'Estado: Listo.';
+    elLiveActionText.style.color = '#93c5fd';
+  }
 }
 
 // ============================================================================

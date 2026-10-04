@@ -17,6 +17,7 @@ Este documento recopila los incidentes, errores y discrepancias encontrados dura
 9. [Ciclo de Vida Epímero del Service Worker (Heartbeats y Puertos)](#9-ciclo-de-vida-epímero-del-service-worker-heartbeats-y-puertos)
 10. [Sintetización de Eventos de Puntero/Hover en SPAs con Enlaces 'Lazy' (Evitar Nudges Manuales del Usuario)](#10-sintetización-de-eventos-de-punterohover-en-spas-con-enlaces-lazy-evitar-nudges-manuales-del-usuario)
 11. [La Trampa de los Timers en el Service Worker (setInterval no previene la suspensión en MV3)](#11-la-trampa-de-los-timers-en-el-service-worker-setinterval-no-previene-la-suspensión-en-mv3)
+12. [Invalidación de Contexto de Extensión en Pestañas Previas tras Recargar (Extension Context Invalidated)](#12-invalidación-de-contexto-de-extensión-en-pestañas-previas-tras-recargar-extension-context-invalidated)
 
 ---
 
@@ -234,5 +235,45 @@ En el diseño inicial, el Service Worker contenía un `setInterval(() => { ... }
 > - **El latido DEBE originarse siempre en los contextos con DOM vivo** (`Content Script` o `Side Panel` / `Popup`), nunca en el Service Worker.
 > - Dado que los scripts de contenido y páginas de extensión residen en pestañas activas con bucles de eventos continuos que Chromium no suspende a los 30s, ellos deben ejecutar el `setInterval(15000)` y enviar mensajes `HEARTBEAT_PING` **hacia** el Service Worker.
 > - La recepción de un mensaje a través de `port.onMessage` le indica fehacientemente al gestor de extensiones de Chrome que el Service Worker está atendiendo una solicitud activa, reseteando su temporizador de inactividad de 30 segundos indefinidamente.
+
+---
+
+## 12. Invalidación de Contexto de Extensión en Pestañas Previas tras Recargar (Extension Context Invalidated)
+
+### Síntoma / Error
+Al recargar la extensión desde el panel de desarrollador (`chrome://extensions` ⟳) y presionar "Start Extraction" en el Side Panel:
+1. El Side Panel quedaba congelado en `0 Harvested Places` y los botones bloqueados.
+2. En la página de errores de Chrome (`chrome://extensions/?errors=...`) se acumulaba una ráfaga de excepciones:
+   ```text
+   [Content Script] Failed to connect to background pipeline: Error: Extension context invalidated.
+   ```
+3. El log del Side Panel mostraba:
+   ```text
+   [Init] Extension loaded. Waiting for Google Maps tab...
+   [12:40:57 PM] Connected to Background Service Worker.
+   [12:40:59 PM] Dispatched extraction start command (mode: hybrid).
+   ```
+   sin recibir ningún evento ni avance posterior.
+
+### Causa Raíz
+Cuando se recarga o actualiza una extensión en Chrome:
+1. **Destrucción del Runtime:** El identificador de contexto (`chrome.runtime.id`) de la versión anterior se destruye instantáneamente.
+2. **Scripts Huérfanos:** Las pestañas de Google Maps que ya estaban abiertas en el navegador **no se recargan automáticamente**. Permanecen ejecutando el Content Script de la versión anterior.
+3. **Falla de API:** Cuando ese Content Script huérfano detecta que su puerto se cerró e intenta reconectarse (`chrome.runtime.connect`), Chromium rechaza la llamada lanzando `Error: Extension context invalidated`. Si el script tiene una rutina de reintento recursiva (`setTimeout(connect, 2500)`), satura la consola de errores de Chrome.
+4. **Falta de Detección en el Service Worker:** El nuevo Service Worker arrancó limpio, el Side Panel se conectó a él, pero la pestaña de Google Maps **nunca conectó un puerto nuevo**. Al presionar "Start Extraction", el Service Worker intentaba despachar el comando a un `contentPort` nulo, fallando en silencio sin notificar a la interfaz ni intentar reinyectar el código.
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Estrategia Tripartita para Manejar la Invalidación de Contexto**:
+> 1. **Freno de Mano en el Content Script:** Antes de cualquier reconexión o llamada a la API, comprueba `if (!chrome.runtime?.id)`. Si es nulo o si la excepción contiene `"Extension context invalidated"`, detén inmediatamente los temporizadores de reconexión y emite un mensaje informativo pidiendo recargar la pestaña, evitando ensuciar el registro de errores de Chrome.
+> 2. **Auto-Inyección Dinámica desde el Service Worker (`chrome.scripting.executeScript`):** Si el usuario inicia una acción en el Side Panel y `contentPort === null`, el Service Worker no debe fallar en silencio:
+>    - Debe consultar las pestañas abiertas mediante `chrome.tabs.query({ url: '*://*.google.*/maps*' })`.
+>    - Debe intentar inyectar en caliente el nuevo Content Script en la pestaña activa usando `chrome.scripting.executeScript({ target: { tabId }, files: ['dist/content.bundle.js'] })`.
+> 3. **Feedback Inmediato y Reversión de Estado en la UI:** Si la inyección en caliente no es posible o la pestaña no responde, la extensión debe emitir un mensaje de alta prioridad al usuario en la terminal:
+>    ```text
+>    [RELOAD_REQUIRED] Por favor presiona F5 en la pestaña de Google Maps para reactivar la conexión.
+>    ```
+>    y **revertir inmediatamente el estado de los botones** de la interfaz a habilitados para evitar que el usuario quede bloqueado.
+
 
 

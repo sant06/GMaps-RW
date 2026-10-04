@@ -170,6 +170,7 @@ export type ContentToWorkerMessage =
   | { type: 'EXTRACTION_PROGRESS'; payload: ExtractionProgressStats }
   | { type: 'EXTRACTION_STREAM_BATCH'; payload: ExtractionStreamPayload }
   | { type: 'EXTRACTION_COMPLETED'; payload: { totalItems: number; items: ScrapedPlaceRecord[] } }
+  | { type: 'EXTRACTION_ACTION_LOG'; payload: { level: 'info' | 'warn' | 'error' | 'debug'; tag: string; message: string } }
   | { type: 'EXTRACTION_ERROR'; payload: PipelineErrorMessage }
   | { type: 'MUTATION_PROGRESS'; payload: MutationProgressStats }
   | { type: 'MUTATION_ITEM_RESULT'; payload: { item: MutationItemPayload; result: MutationResult } }

@@ -146,45 +146,57 @@ export class MapsVirtualScroller {
    * Executes the full scrolling harvesting loop with automatic synthetic hover nudges.
    */
   public async runExtraction(
-    progressCallback: (stats: { count: number; newlyAdded: ScrapedPlaceRecord[]; isStagnant: boolean }) => void
+    progressCallback: (stats: { count: number; newlyAdded: ScrapedPlaceRecord[]; isStagnant: boolean }) => void,
+    logCallback?: (level: 'info' | 'warn' | 'error', tag: string, message: string) => void
   ): Promise<ScrapedPlaceRecord[]> {
+    logCallback?.('info', 'ACTION', 'Iniciando escaneo del DOM en busca de la lista de lugares...');
+
     if (!this.container) {
       this.container = this.findPrimaryContainer();
     }
 
     // If still not found, attempt to open the Saved panel automatically
     if (!this.container) {
+      logCallback?.('warn', 'NAV', 'Lista no visible en el viewport actual. Intentando abrir panel "Guardados / Saved" automáticamente...');
       const opened = await this.tryAutoOpenSavedPanel();
       if (opened) {
-        await this.rateLimiter.sleep(1000);
+        logCallback?.('info', 'NAV', 'Botón de "Guardados" presionado. Esperando montaje del panel...');
+        await this.rateLimiter.sleep(1200);
         this.container = this.findPrimaryContainer();
       }
     }
 
     if (!this.container) {
+      logCallback?.('error', 'DOM', 'No se detectó ninguna lista abierta. Por favor abre tu lista en Google Maps (ej. Guardados -> Favoritos / Quiero ir) y presiona Iniciar de nuevo.');
       throw new Error(
         'No active list panel found in Google Maps. Please open your Saved List (in Google Maps: click Menu ☰ -> Saved / Guardados -> select your list) and try again.'
       );
     }
 
+    const containerDesc = `<${this.container.tagName.toLowerCase()}${this.container.className ? '.' + this.container.className.split(' ').slice(0, 2).join('.') : ''}>`;
+    logCallback?.('info', 'DOM', `Contenedor de lista localizado: ${containerDesc} (ScrollHeight: ${this.container.scrollHeight}px).`);
+
     let stagnationCycles = 0;
     const MAX_STAGNATION_LIMIT = 6;
+    let cycle = 0;
 
     while (!this.isAborted) {
       if (this.isPaused) {
         await this.rateLimiter.sleep(400);
         continue;
       }
-
+      cycle++;
       const initialCount = this.harvestedMap.size;
 
       // 1. Synthesize hover on cards and harvest newly populated anchors
       const newlyAdded = await this.harvestVisibleElements();
 
-      if (newlyAdded.length === 0) {
-        stagnationCycles++;
-      } else {
+      if (newlyAdded.length > 0) {
         stagnationCycles = 0;
+        const sampleTitles = newlyAdded.slice(0, 2).map((p) => `"${p.title}"`).join(', ');
+        logCallback?.('info', 'EXTRACT', `Ciclo #${cycle}: Extraídos +${newlyAdded.length} lugares (${sampleTitles}). Total: ${this.harvestedMap.size}`);
+      } else {
+        stagnationCycles++;
       }
 
       progressCallback({
@@ -195,6 +207,7 @@ export class MapsVirtualScroller {
 
       // Sentinel or stagnation termination evaluation
       if (this.detectTerminalSentinel() || stagnationCycles >= MAX_STAGNATION_LIMIT) {
+        logCallback?.('warn', 'RECOVERY', `Ciclo #${cycle}: Sin nuevos elementos visibles. Ejecutando micro-scroll para re-activar reciclador virtual de Google...`);
         // Recovery routine: scroll backward slightly to re-trigger Google intersection observers
         this.performActiveScroll(-350);
         await this.rateLimiter.sleep(500);
@@ -204,11 +217,13 @@ export class MapsVirtualScroller {
         const recoveryAdded = await this.harvestVisibleElements();
         if (recoveryAdded.length > 0) {
           stagnationCycles = 0;
+          const sample = recoveryAdded.slice(0, 2).map((p) => `"${p.title}"`).join(', ');
+          logCallback?.('info', 'EXTRACT', `Recuperación exitosa: +${recoveryAdded.length} lugares (${sample}). Total: ${this.harvestedMap.size}`);
           continue;
         }
 
         if (this.harvestedMap.size === initialCount && stagnationCycles >= MAX_STAGNATION_LIMIT) {
-          console.log('[VirtualScroller] Termination criteria satisfied. Stagnation threshold reached.');
+          logCallback?.('info', 'COMPLETE', `Ciclo #${cycle}: Final de la lista alcanzado tras ${cycle} ciclos. Extracción finalizada con éxito.`);
           break;
         }
       }
@@ -216,11 +231,13 @@ export class MapsVirtualScroller {
       // Variable downward scroll increment (350px - 520px)
       const variableStep = Math.floor(Math.random() * (520 - 350 + 1)) + 350;
       this.performActiveScroll(variableStep);
+      logCallback?.('info', 'SCROLL', `Ciclo #${cycle}: Scroll +${variableStep}px (Posición: ${Math.round(this.container.scrollTop)}px). Lugares: ${this.harvestedMap.size}.`);
 
       // Fast, responsive delay (300ms - 550ms)
       await this.rateLimiter.applyAdaptiveDelay();
     }
 
+    logCallback?.('info', 'SUCCESS', `Extracción completada. ${this.harvestedMap.size} lugares listos para exportar a Excel, GeoJSON, KML o CSV.`);
     return Array.from(this.harvestedMap.values());
   }
 

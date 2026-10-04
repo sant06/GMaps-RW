@@ -384,6 +384,36 @@ label {
   gap: 6px;
 }
 
+.live-action-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: #0f172a;
+  border: 1px solid #1e3a5f;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  margin-bottom: 6px;
+  color: #93c5fd;
+  font-weight: 500;
+  min-height: 28px;
+}
+
+.live-action-banner .status-indicator-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--accent-blue);
+  flex-shrink: 0;
+  animation: pulse-dot 1.6s infinite;
+}
+
+@keyframes pulse-dot {
+  0% { opacity: 0.3; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.15); }
+  100% { opacity: 0.3; transform: scale(0.9); }
+}
+
 .log-terminal {
   background-color: #090d16;
   border-radius: 6px;

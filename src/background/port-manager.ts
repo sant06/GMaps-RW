@@ -136,6 +136,18 @@ export class PortManager {
         break;
       }
 
+      case 'EXTRACTION_ACTION_LOG':
+        this.sendToSidePanel({
+          type: 'LOG_ENTRY',
+          payload: {
+            level: msg.payload.level,
+            timestamp: Date.now(),
+            tag: msg.payload.tag,
+            message: msg.payload.message,
+          },
+        });
+        break;
+
       case 'EXTRACTION_COMPLETED':
         await StateManager.updatePipelineStatus('completed');
         this.sendToSidePanel({
@@ -202,6 +214,41 @@ export class PortManager {
         break;
 
       case 'REQUEST_START_EXTRACTION':
+        if (!this.contentPort) {
+          this.sendToSidePanel({
+            type: 'LOG_ENTRY',
+            payload: {
+              level: 'warn',
+              timestamp: Date.now(),
+              tag: 'CONNECT',
+              message: 'Google Maps no está conectado aún. Buscando pestaña e inyectando pipeline...',
+            },
+          });
+
+          const injected = await this.tryAutoInjectMapsTab();
+          if (!injected) {
+            this.sendToSidePanel({
+              type: 'LOG_ENTRY',
+              payload: {
+                level: 'error',
+                timestamp: Date.now(),
+                tag: 'RELOAD_REQUIRED',
+                message: 'No hay conexión con Google Maps. Si acabas de recargar la extensión, por favor presiona F5 en la pestaña de Google Maps para reactivar la conexión.',
+              },
+            });
+            await StateManager.updatePipelineStatus('idle');
+            await this.broadcastStateSnapshot();
+            this.sendToSidePanel({
+              type: 'OPERATION_FINISHED',
+              payload: {
+                operation: 'extraction',
+                success: false,
+                message: 'Por favor recarga (F5) la pestaña de Google Maps.',
+              },
+            });
+            return;
+          }
+        }
         await StateManager.updatePipelineStatus('extracting');
         this.sendToContent({ type: 'CMD_START_EXTRACTION', payload: msg.payload });
         break;
@@ -287,5 +334,42 @@ export class PortManager {
       type: 'TAB_CONNECTION_CHANGED',
       payload: { connected, tabId: this.activeTabId, url },
     });
+  }
+
+  private async tryAutoInjectMapsTab(): Promise<boolean> {
+    try {
+      const tabs = await chrome.tabs.query({ url: '*://*.google.*/maps*' });
+      let targetTab = tabs[0];
+      if (!targetTab) {
+        const allTabs = await chrome.tabs.query({});
+        targetTab = allTabs.find((t) => t.url && t.url.includes('/maps')) || tabs[0];
+      }
+      if (!targetTab?.id) return false;
+
+      this.sendToSidePanel({
+        type: 'LOG_ENTRY',
+        payload: {
+          level: 'info',
+          timestamp: Date.now(),
+          tag: 'INJECT',
+          message: `Inyectando script de extracción en pestaña activa (id: ${targetTab.id})...`,
+        },
+      });
+
+      await chrome.scripting.executeScript({
+        target: { tabId: targetTab.id },
+        files: ['dist/content.bundle.js'],
+      });
+
+      // Wait up to 1.5s for port to connect
+      for (let i = 0; i < 6; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        if (this.contentPort) return true;
+      }
+      return this.contentPort !== null;
+    } catch (err) {
+      console.warn('[PortManager] Auto-inject failed:', err);
+      return false;
+    }
   }
 }

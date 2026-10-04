@@ -73,6 +73,11 @@ function stopClientHeartbeat(): void {
 
 function connectToBackground(): void {
   try {
+    if (!chrome.runtime?.id) {
+      console.info('[Content Script] Extension context invalidated. Tab reload required.');
+      return;
+    }
+
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -94,20 +99,38 @@ function connectToBackground(): void {
       },
     } as ContentToWorkerMessage);
 
+    pipelinePort.postMessage({
+      type: 'EXTRACTION_ACTION_LOG',
+      payload: {
+        level: 'info',
+        tag: 'CONNECT',
+        message: `Pestaña de Google Maps vinculada (${window.location.pathname}).`,
+      },
+    } as ContentToWorkerMessage);
+
     bridge.queryAuthContext();
 
     pipelinePort.onMessage.addListener(handleWorkerMessage);
 
     pipelinePort.onDisconnect.addListener(() => {
-      console.warn('[Content Script] Pipeline port disconnected. Scheduling reconnect in 2.5s...');
+      console.warn('[Content Script] Pipeline port disconnected.');
       stopClientHeartbeat();
       pipelinePort = null;
-      reconnectTimer = setTimeout(connectToBackground, 2500);
+      if (chrome.runtime?.id) {
+        reconnectTimer = setTimeout(connectToBackground, 2500);
+      }
     });
   } catch (err) {
-    console.error('[Content Script] Failed to connect to background pipeline:', err);
-    stopClientHeartbeat();
-    reconnectTimer = setTimeout(connectToBackground, 4000);
+    const isInvalidated = err instanceof Error && err.message.includes('Extension context invalidated');
+    if (!isInvalidated) {
+      console.error('[Content Script] Failed to connect to background pipeline:', err);
+      stopClientHeartbeat();
+      if (chrome.runtime?.id) {
+        reconnectTimer = setTimeout(connectToBackground, 4000);
+      }
+    } else {
+      console.info('[Content Script] Extension was reloaded. Please refresh (F5) the Google Maps tab.');
+    }
   }
 }
 
@@ -160,36 +183,45 @@ async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
   activeScroller = new MapsVirtualScroller();
 
   try {
-    const finalItems = await activeScroller.runExtraction((stats) => {
-      if (!pipelinePort) return;
+    const finalItems = await activeScroller.runExtraction(
+      (stats) => {
+        if (!pipelinePort) return;
 
-      const elapsedSec = (Date.now() - extractionStartTime) / 1000;
-      const velocity = elapsedSec > 0 ? stats.count / elapsedSec : 0;
+        const elapsedSec = (Date.now() - extractionStartTime) / 1000;
+        const velocity = elapsedSec > 0 ? stats.count / elapsedSec : 0;
 
-      if (stats.newlyAdded.length > 0) {
+        if (stats.newlyAdded.length > 0) {
+          pipelinePort.postMessage({
+            type: 'EXTRACTION_STREAM_BATCH',
+            payload: {
+              items: stats.newlyAdded,
+              isTerminalBatch: false,
+              totalHarvestedSoFar: stats.count,
+            },
+          } as ContentToWorkerMessage);
+        }
+
         pipelinePort.postMessage({
-          type: 'EXTRACTION_STREAM_BATCH',
+          type: 'EXTRACTION_PROGRESS',
           payload: {
-            items: stats.newlyAdded,
-            isTerminalBatch: false,
-            totalHarvestedSoFar: stats.count,
+            totalHarvested: stats.count,
+            uniqueCoordinatesCount: stats.count,
+            velocityItemsPerSec: velocity,
+            etaSeconds: null,
+            currentScrollOffset: 0,
+            stagnationCycles: stats.isStagnant ? 1 : 0,
+            mode: options.mode,
           },
         } as ContentToWorkerMessage);
+      },
+      (level, tag, message) => {
+        if (!pipelinePort) return;
+        pipelinePort.postMessage({
+          type: 'EXTRACTION_ACTION_LOG',
+          payload: { level, tag, message },
+        } as ContentToWorkerMessage);
       }
-
-      pipelinePort.postMessage({
-        type: 'EXTRACTION_PROGRESS',
-        payload: {
-          totalHarvested: stats.count,
-          uniqueCoordinatesCount: stats.count,
-          velocityItemsPerSec: velocity,
-          etaSeconds: null,
-          currentScrollOffset: 0,
-          stagnationCycles: stats.isStagnant ? 1 : 0,
-          mode: options.mode,
-        },
-      } as ContentToWorkerMessage);
-    });
+    );
 
     pipelinePort?.postMessage({
       type: 'EXTRACTION_COMPLETED',
