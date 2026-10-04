@@ -35,31 +35,58 @@ export class MapsVirtualScroller {
    * Locates Google Maps virtualized container using multi-level heuristic detection.
    */
   public findPrimaryContainer(): HTMLElement | null {
-    // 1. Primary: If place links or place cards exist, find their scrollable ancestor
-    const sampleLink = document.querySelector<HTMLElement>(
-      'a[href*="/maps/place/"], a[href*="/place/"], a.hfpxzc, div[role="article"], div.Nv2PK'
-    );
-    if (sampleLink) {
-      let parent = sampleLink.parentElement;
+    const placeSelectors = [
+      '.fontHeadlineSmall',
+      '.qBF1Pd',
+      'span.OSrXXb',
+      'a[href*="/maps/place/"]',
+      'a[href*="/place/"]',
+      'a.hfpxzc',
+      'div[role="listitem"]',
+      'div[data-item-id]',
+      'div[jsaction*="place" i]',
+      'div[jsaction*="item" i]',
+      'div[jsaction*="entity" i]',
+      'button[aria-label*="nota" i]',
+      'button[aria-label*="note" i]',
+      'div[role="article"]',
+      'div.Nv2PK',
+    ];
+
+    // 1. Primary: If place items or titles exist, find their container in the left panel
+    const sample = document.querySelector<HTMLElement>(placeSelectors.join(', '));
+    if (sample) {
+      let parent = sample.parentElement;
+      let fallbackPanel: HTMLElement | null = null;
       while (parent && parent !== document.body && parent !== document.documentElement) {
-        const isScrollable = parent.scrollHeight > parent.clientHeight && parent.clientHeight > 100;
-        if (isScrollable) {
-          return parent;
+        const rect = parent.getBoundingClientRect();
+        if (rect.left < window.innerWidth * 0.65 && rect.width > 200) {
+          if (parent.scrollHeight > parent.clientHeight && parent.clientHeight > 100) {
+            return parent;
+          }
+          if (parent.clientHeight > 200 && !fallbackPanel) {
+            fallbackPanel = parent;
+          }
         }
         parent = parent.parentElement;
       }
+      if (fallbackPanel) {
+        return fallbackPanel;
+      }
     }
 
-    // 2. Try known Google Maps container selectors ONLY if they have role="feed" or contain place items
+    // 2. Try known Google Maps container selectors
     const candidates = [
       'div[role="feed"]',
       'div.m6QErb[aria-label]',
       'div.m6QErb.DxyBCb',
       'div.m6QErb',
       'div[role="main"] div[tabindex="-1"]',
+      'div[role="main"]',
       'div[role="region"][aria-label]',
       'div[role="region"]',
       'div#pane div[tabindex="-1"]',
+      'div#pane',
       'div.widget-pane-content',
       'div.section-layout',
     ];
@@ -68,32 +95,23 @@ export class MapsVirtualScroller {
       const elements = document.querySelectorAll<HTMLElement>(selector);
       for (const el of elements) {
         const isFeed = el.getAttribute('role') === 'feed';
-        const hasPlaces = el.querySelector('a[href*="/place/"], a.hfpxzc, div[role="article"], div.Nv2PK') !== null;
-        if ((isFeed || hasPlaces) && el.scrollHeight > el.clientHeight && el.clientHeight > 150) {
+        const hasPlaces = el.querySelector(placeSelectors.join(', ')) !== null;
+        const hasHeader = el.querySelector('h1, div[role="heading"]') !== null;
+        if ((isFeed || hasPlaces || hasHeader) && el.clientHeight > 150) {
           return el;
         }
       }
     }
 
-    // 3. Fallback: Search left panel scrollable elements ONLY if they contain place links
-    if (sampleLink) {
-      const allDivs = document.querySelectorAll<HTMLElement>('div');
-      for (const div of allDivs) {
-        if (div.clientHeight > 200 && div.scrollHeight > div.clientHeight + 80) {
-          const rect = div.getBoundingClientRect();
-          if (rect.left < window.innerWidth * 0.6 && rect.width > 200) {
-            const hasPlaces = div.querySelector('a[href*="/place/"], a.hfpxzc, div[role="article"]') !== null;
-            if (hasPlaces) {
-              return div;
-            }
-          }
-        }
-      }
+    // 3. Direct parent of sample item if found
+    if (sample?.parentElement) {
+      return sample.parentElement;
     }
 
-    // 4. If elements with place links exist anywhere, use their direct container
-    if (sampleLink?.parentElement) {
-      return sampleLink.parentElement;
+    // 4. Fallback: Google Maps main left pane (#pane, div[role="main"])
+    const leftPane = document.querySelector<HTMLElement>('#pane, div[role="main"], div.widget-pane');
+    if (leftPane && leftPane.clientHeight > 150) {
+      return leftPane;
     }
 
     return null;
@@ -197,6 +215,19 @@ export class MapsVirtualScroller {
     const containerDesc = `<${this.container.tagName.toLowerCase()}${this.container.className ? '.' + this.container.className.split(' ').slice(0, 2).join('.') : ''}>`;
     logCallback?.('info', 'DOM', `Contenedor de lista localizado: ${containerDesc} (ScrollHeight: ${this.container.scrollHeight}px).`);
 
+    if (this.harvestedMap.size > 0) {
+      logCallback?.(
+        'info',
+        'CACHE',
+        `Cargados ${this.harvestedMap.size} lugares verificados desde la sesión activa de Google Maps.`
+      );
+      progressCallback({
+        count: this.harvestedMap.size,
+        newlyAdded: Array.from(this.harvestedMap.values()),
+        isStagnant: false,
+      });
+    }
+
     let stagnationCycles = 0;
     const MAX_STAGNATION_LIMIT = 6;
     let cycle = 0;
@@ -225,6 +256,18 @@ export class MapsVirtualScroller {
         newlyAdded,
         isStagnant: stagnationCycles > 0,
       });
+
+      // If the list is short and already fully displayed in the viewport (e.g. 5-15 items),
+      // terminate immediately once items are harvested without unnecessary scroll spinning.
+      const isShortList = this.container.scrollHeight <= this.container.clientHeight + 40;
+      if (isShortList && this.harvestedMap.size > 0) {
+        logCallback?.(
+          'info',
+          'COMPLETE',
+          `Lista completa en pantalla detectada (${this.harvestedMap.size} lugares). Extracción finalizada con éxito.`
+        );
+        break;
+      }
 
       // Sentinel or stagnation termination evaluation
       if (this.detectTerminalSentinel() || stagnationCycles >= MAX_STAGNATION_LIMIT) {
@@ -317,14 +360,20 @@ export class MapsVirtualScroller {
     const cardSelectors = [
       'div[role="article"]',
       'div.Nv2PK',
-      'div[jsaction*="place"]',
-      'div[jsaction*="entity"]',
-      'div[jsaction*="hover"]',
-      'div[jsaction*="mouseover"]',
+      'div[role="listitem"]',
       'div[data-item-id]',
+      'div[jsaction*="place" i]',
+      'div[jsaction*="entity" i]',
+      'div[jsaction*="item" i]',
+      'div[jsaction*="hover" i]',
+      'div[jsaction*="mouseover" i]',
       'div.m6QErb > div',
+      '.fontHeadlineSmall',
+      '.qBF1Pd',
       'a.hfpxzc',
-      'button[aria-label][jsaction*="pin"]',
+      'button[aria-label*="nota" i]',
+      'button[aria-label*="note" i]',
+      'button[aria-label][jsaction*="pin" i]',
       'div[role="button"][aria-label]',
     ];
 
@@ -358,12 +407,19 @@ export class MapsVirtualScroller {
         childAction.dispatchEvent(new MouseEvent('mouseenter', pointerProps));
       }
 
-      // Trigger focus and focusin on the place anchor (activates Google Maps a11y URL hydration without mouse)
-      const anchor = card.tagName === 'A' ? (card as HTMLAnchorElement) : card.querySelector<HTMLAnchorElement>('a.hfpxzc, a[href*="/place/"]');
+      // Trigger focus and focusin on the place anchor or card (activates Google Maps a11y URL hydration without mouse)
+      const anchor = card.tagName === 'A' ? (card as HTMLAnchorElement) : card.querySelector<HTMLAnchorElement>('a');
       if (anchor) {
         try {
           anchor.focus();
           anchor.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+        } catch {
+          // Ignore focus errors
+        }
+      } else {
+        try {
+          card.focus();
+          card.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
         } catch {
           // Ignore focus errors
         }
@@ -385,13 +441,22 @@ export class MapsVirtualScroller {
 
     const newlyAdded: ScrapedPlaceRecord[] = [];
 
-    // 2. Query all candidate anchors restricted to place links
+    // 2. Strategy A: Query all candidate anchors restricted to place links
     const anchorSelectors = [
       'a[href*="/maps/place/"]',
       'a[href*="/place/"]',
+      'a[href*="/maps/@"]',
+      'a[href*="/maps/search/"]',
+      'a[href*="google.com/maps"]',
       'a[data-href*="/maps/place/"]',
       'a[data-href*="/place/"]',
+      'a[data-href*="/maps/"]',
       'a.hfpxzc',
+      'a[data-item-id]',
+      'div[role="listitem"] a',
+      'div[data-item-id] a',
+      'div.m6QErb a',
+      'a[jsaction*="place" i]',
     ];
 
     const anchors = new Set<HTMLAnchorElement>();
@@ -405,11 +470,14 @@ export class MapsVirtualScroller {
       const parsedCoords = GoogleMapsUrlParser.parse(url);
       if (!parsedCoords) return;
 
-      const title =
+      const rawTitle =
         anchor.getAttribute('aria-label') ||
-        anchor.querySelector('[role="heading"]')?.textContent?.trim() ||
-        anchor.closest('div[role="article"], div.Nv2PK')?.querySelector('.fontHeadlineSmall, .qBF1Pd, [role="heading"], span.OSrXXb')?.textContent?.trim() ||
+        anchor.querySelector('[role="heading"], .fontHeadlineSmall, .qBF1Pd')?.textContent?.trim() ||
+        anchor.closest('div[role="listitem"], div[data-item-id], div[role="article"], div.Nv2PK, div[jsaction*="place" i], div.m6QErb > div')?.querySelector('.fontHeadlineSmall, .qBF1Pd, [role="heading"], span.OSrXXb')?.textContent?.trim() ||
+        anchor.textContent?.trim() ||
         '';
+
+      const title = rawTitle.replace(/\s*\+\s*nota\b/i, '').replace(/\s*\+\s*note\b/i, '').trim();
 
       if (!title || !isLegitimatePlaceTitle(title)) return;
       if (!isPlausibleGeoCoordinate(parsedCoords.latitude, parsedCoords.longitude)) return;
@@ -420,9 +488,14 @@ export class MapsVirtualScroller {
         generateSyntheticPlaceId(title, parsedCoords.latitude, parsedCoords.longitude);
 
       if (!this.harvestedMap.has(id)) {
-        const cardParent = anchor.closest('div[jsaction], div[role="article"], div.Nv2PK') || anchor.parentElement;
-        const noteEl = cardParent?.querySelector('div[data-note], [aria-label*="note" i], span[class*="note" i]');
-        const userNote = noteEl?.textContent?.trim() || undefined;
+        const cardParent = anchor.closest('div[role="listitem"], div[data-item-id], div[jsaction*="place" i], div[role="article"], div.Nv2PK, div.m6QErb > div') || anchor.parentElement;
+        const noteEl = cardParent?.querySelector('div[data-note], [aria-label*="nota" i], [aria-label*="note" i], span[class*="note" i]');
+        let userNote = noteEl?.textContent?.trim() || undefined;
+        if (userNote && (userNote.toLowerCase().startsWith('+ not') || userNote.toLowerCase().startsWith('agregar not'))) {
+          userNote = undefined;
+        }
+
+        const address = cardParent?.querySelector('.fontBodyMedium, .W4Efsd, .headlineMedium')?.textContent?.trim() || undefined;
 
         const cardText = cardParent?.textContent || '';
         const isClosed =
@@ -442,6 +515,7 @@ export class MapsVirtualScroller {
           placeId: parsedCoords.placeId,
           featureId: parsedCoords.featureId,
           cid: parsedCoords.cid,
+          address,
           userNote,
           isClosed,
           operationalStatus: isClosed ? 'Permanently closed' : 'Operational',
@@ -450,6 +524,63 @@ export class MapsVirtualScroller {
 
         this.harvestedMap.set(id, record);
         newlyAdded.push(record);
+      }
+    });
+
+    // 3. Strategy B: Scan visible cards in custom Placelists and enrich / correlate
+    const cardElements = root.querySelectorAll<HTMLElement>(
+      'div[role="listitem"], div[data-item-id], div.m6QErb > div, div[jsaction*="place" i]'
+    );
+
+    cardElements.forEach((card) => {
+      const titleEl = card.querySelector<HTMLElement>('.fontHeadlineSmall, .qBF1Pd, [role="heading"], span.OSrXXb');
+      const rawTitle = titleEl?.textContent?.trim() || card.getAttribute('aria-label') || '';
+      const title = rawTitle.replace(/\s*\+\s*nota\b/i, '').replace(/\s*\+\s*note\b/i, '').trim();
+
+      if (!title || !isLegitimatePlaceTitle(title)) return;
+
+      const address = card.querySelector('.fontBodyMedium, .W4Efsd, .headlineMedium')?.textContent?.trim() || undefined;
+      const noteEl = card.querySelector('div[data-note], [aria-label*="nota" i], [aria-label*="note" i], span[class*="note" i]');
+      let userNote = noteEl?.textContent?.trim() || undefined;
+      if (userNote && (userNote.toLowerCase().startsWith('+ not') || userNote.toLowerCase().startsWith('agregar not'))) {
+        userNote = undefined;
+      }
+
+      // Check if child anchor has coordinates
+      const childAnchor = card.querySelector<HTMLAnchorElement>('a[href], a[data-href]');
+      if (childAnchor) {
+        const url = childAnchor.href || childAnchor.getAttribute('data-href') || '';
+        const parsed = GoogleMapsUrlParser.parse(url);
+        if (parsed && isPlausibleGeoCoordinate(parsed.latitude, parsed.longitude)) {
+          const id = parsed.placeId || parsed.featureId || generateSyntheticPlaceId(title, parsed.latitude, parsed.longitude);
+          if (!this.harvestedMap.has(id)) {
+            const record: ScrapedPlaceRecord = {
+              id,
+              title,
+              url,
+              latitude: parsed.latitude,
+              longitude: parsed.longitude,
+              isHighPrecision: parsed.isHighPrecision,
+              placeId: parsed.placeId,
+              featureId: parsed.featureId,
+              address,
+              userNote,
+              extractedAt: new Date().toISOString(),
+            };
+            this.harvestedMap.set(id, record);
+            newlyAdded.push(record);
+            return;
+          }
+        }
+      }
+
+      // If already in harvestedMap (e.g. from RPC pre-harvest), enrich with live DOM note/address
+      for (const record of this.harvestedMap.values()) {
+        if (record.title.toLowerCase() === title.toLowerCase()) {
+          if (userNote && !record.userNote) record.userNote = userNote;
+          if (address && !record.address) record.address = address;
+          break;
+        }
       }
     });
 

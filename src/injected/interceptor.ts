@@ -34,6 +34,9 @@ import { BatchexecuteUnpacker } from './rpc-unpacker';
     'entity',
     '/maps/api/place/',
     'collection',
+    'placelist',
+    'lookup',
+    'list',
   ];
 
   // PostMessage dispatch helper
@@ -59,10 +62,38 @@ import { BatchexecuteUnpacker } from './rpc-unpacker';
     }
   }
 
-  // Initial auth broadcast with retries for late WIZ hydration
+  // Scans initial host page state (APP_INITIALIZATION_STATE / _pageData) for places already hydrated on load
+  function inspectInitialAppState(): void {
+    try {
+      const win = window as unknown as Record<string, unknown>;
+      const initState = win.APP_INITIALIZATION_STATE || win._pageData || win._;
+      if (initState) {
+        const places = BatchexecuteUnpacker.deepExtractPlaces(initState);
+        if (places.length > 0) {
+          postToBridge({
+            type: 'RPC_INTERCEPTED',
+            payload: {
+              endpoint: 'APP_INITIALIZATION_STATE',
+              method: 'GET',
+              rawBody: '',
+              parsedPayload: [initState],
+              rpcId: 'initial_state',
+            },
+          });
+        }
+      }
+    } catch {
+      // Fail silently
+    }
+  }
+
+  // Initial broadcasts with retries for late WIZ/DOM hydration
   setTimeout(inspectAndBroadcastAuth, 500);
+  setTimeout(inspectInitialAppState, 600);
   setTimeout(inspectAndBroadcastAuth, 1500);
+  setTimeout(inspectInitialAppState, 1800);
   setTimeout(inspectAndBroadcastAuth, 3500);
+  setTimeout(inspectInitialAppState, 3800);
 
   // ==========================================================================
   // 1. MONKEY-PATCH NATIVE fetch API

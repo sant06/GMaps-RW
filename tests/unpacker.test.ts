@@ -77,6 +77,64 @@ describe('BatchexecuteUnpacker', () => {
     expect(extracted.length).toBe(0);
   });
 
+  it('correctly unpacks Google Maps Placelists (nested title and geometry arrays) like Mayo24', () => {
+    const mockPlacelistPayload = [
+      'list_metadata',
+      [
+        'Mayo24',
+        '10 sitios',
+        [
+          [
+            '0x960a33b2bf884145:0x8797f1cc51376e33',
+            ['Neuquén', 'Neuquén, Neuquén Province'],
+            null,
+            null,
+            null,
+            [[null, null, -38.9516, -68.0591]],
+            'ChIJNeuquenPlaceId12345678',
+            'Hermosa ciudad para visitar',
+          ],
+          [
+            '0x960a000000000000:0x1111111111111111',
+            ['Dropped pin', 'near Camino Parque Centenario, Buenos Aires'],
+            null,
+            null,
+            null,
+            [[null, null, -34.8912, -58.0123]],
+          ],
+          [
+            '0x9610000000000000:0x2222222222222222',
+            ['Valdivia', 'Valdivia, Los Ríos'],
+            null,
+            null,
+            null,
+            [[null, null, -39.8142, -73.2459]],
+            'ChIJValdiviaPlaceId1234567',
+          ],
+        ],
+      ],
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces(mockPlacelistPayload);
+    expect(extracted.length).toBe(3);
+
+    expect(extracted[0].title).toBe('Neuquén');
+    expect(extracted[0].address).toBe('Neuquén, Neuquén Province');
+    expect(extracted[0].latitude).toBeCloseTo(-38.9516, 4);
+    expect(extracted[0].longitude).toBeCloseTo(-68.0591, 4);
+    expect(extracted[0].placeId).toBe('ChIJNeuquenPlaceId12345678');
+    expect(extracted[0].userNote).toBe('Hermosa ciudad para visitar');
+
+    expect(extracted[1].title).toBe('Dropped pin');
+    expect(extracted[1].address).toBe('near Camino Parque Centenario, Buenos Aires');
+    expect(extracted[1].latitude).toBeCloseTo(-34.8912, 4);
+    expect(extracted[1].longitude).toBeCloseTo(-58.0123, 4);
+
+    expect(extracted[2].title).toBe('Valdivia');
+    expect(extracted[2].latitude).toBeCloseTo(-39.8142, 4);
+    expect(extracted[2].longitude).toBeCloseTo(-73.2459, 4);
+  });
+
   it('fails gracefully on empty or malformed strings without throwing', () => {
     expect(BatchexecuteUnpacker.unpack('')).toEqual([]);
     expect(BatchexecuteUnpacker.unpack(')]}\'\nrandom non-json garbage')).toEqual([]);

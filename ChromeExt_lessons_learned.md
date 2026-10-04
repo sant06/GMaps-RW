@@ -371,8 +371,56 @@ El usuario reportaba que la extensión *"parecía requerir que hiciera hover fí
 >    ```
 >    Este enfoque garantiza que los atributos de destino se pueblen de forma determinística en el DOM, permitiendo una extracción 100% autónoma y manos libres.
 
+---
 
+## 16. Discrepancias Estructurales de DOM entre Feeds de Búsqueda y Listas Personalizadas (Placelists), la Trampa de Altura en Listas Cortas y Desempaquetado Post-Order de Protobuf
 
+### Síntoma / Error
+1. El usuario abrió una lista personalizada compartida (**"Mayo24"** con 10 sitios: Neuquén, Dropped pin, Valdivia, Playa Las Conchitas, Iquique, etc.) visible en el panel izquierdo de Google Maps.
+2. Al presionar "Start Extraction", el log falló de inmediato con el error:
+   ```text
+   [DOM] No se detectó ninguna lista abierta. Por favor abre tu lista en Google Maps (ej. Guardados -> Favoritos / Quiero ir) y presiona Iniciar de nuevo.
+   [EXTRACTION] No active list panel found in Google Maps. Please open your Saved List (in Google Maps: click Menu ☰ -> Saved / Guardados -> select your list) and try again.
+   ```
+3. En intentos previos, o bien encontraba erróneamente un contenedor de lienzo de mapa estático (`<div.UL7Qtf>`) y terminaba con 0 lugares, o bien realizaba 6 ciclos de scroll inútiles con posición `0px` sin cosechar nada.
 
+### Causa Raíz
+Este fallo se produjo por la intersección de tres desalineaciones arquitectónicas:
 
+1. **Discrepancia Estructural entre Feeds de Búsqueda y Listas Guardadas (Placelists):**
+   - En los feeds de resultados de búsqueda (`/maps/search/...`), Google Maps estructura las tarjetas con `div[role="article"]`, `div.Nv2PK`, `a.hfpxzc` y el contenedor con `div[role="feed"]`.
+   - En las **Listas Personalizadas y Compartidas (Placelists)**, Google Maps **no utiliza ninguno de esos selectores**:
+     - No existe ningún `role="feed"`.
+     - Las tarjetas no tienen `role="article"` ni clase `Nv2PK`.
+     - Los títulos de los lugares residen en `.fontHeadlineSmall`, `.qBF1Pd`, `span.OSrXXb` o `[role="heading"]`.
+     - Los botones interactivos de notas son `button[aria-label*="nota" i]` y `button[aria-label*="note" i]`.
+     - Los ítems de lista están contenidos en `div[role="listitem"]`, `div[data-item-id]` o hijos directos de `div.m6QErb`.
+   - Al exigir estrictamente los selectores de búsqueda (`a.hfpxzc`, `div.Nv2PK`, `div[role="article"]`), la rutina `findPrimaryContainer` fallaba en 0 segundos a pesar de que la lista estaba visible en pantalla.
 
+2. **La Trampa de Altura en Listas Cortas (The Short List Viewport Trap):**
+   - Una lista pequeña (de 5 a 15 elementos, como los 10 de "Mayo24") cabe holgadamente en el panel lateral del navegador (`clientHeight ~ 850px`, `scrollHeight ~ 850px`).
+   - Requerir numéricamente que `scrollHeight > clientHeight + 80` provocaba que las listas cortas completas fueran descartadas por "no tener scroll", cuando en realidad eran exactamente el contenedor deseado.
+
+3. **Pérdida de Carga Útil RPC por Descarte Temporal y Desempaquetado Superficial de Protobuf:**
+   - Cuando el usuario navegaba a la lista antes de abrir la extensión o de hacer clic en "Iniciar", Google Maps solicitaba el listado vía RPC Batchexecute. Al no estar activa la extracción en ese microsegundo exacto, el content script descartaba el payload.
+   - Además, en la carga deserializada de Protobuf para listas, la entidad del lugar está profundamente anidada:
+     ```json
+     ["0x960a...:0x...", ["Neuquén", "Neuquén, Neuquén Province"], null, null, null, [[null, null, -38.9516, -68.0591]], "ChIJ..."]
+     ```
+     El título reside dentro de un sub-array en el índice 1, y las coordenadas residen dentro de una matriz geométrica `[[null, null, lat, lng]]`. Un escáner superficial que sólo busca números o strings directos en el primer nivel del array ignoraba tanto el título como las coordenadas, devolviendo 0 lugares.
+   - Finalmente, lugares como marcadores huérfanos (**"Dropped pin"** / **"Marcador"**) no poseen un `ChIJ...` Place ID canónico. Exigir obligatoriamente un Place ID descartaba todos los pines libres del usuario.
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Arquitectura Resiliente para Scrapers de Listas en SPAs**:
+> 1. **Mapeo Polimórfico de Esquemas de DOM:**
+>    Nunca asumas un único esquema de DOM para distintas vistas de una misma SPA. Define una batería polimórfica de selectores de entidad (`.fontHeadlineSmall`, `.qBF1Pd`, `div[role="listitem"]`, `button[aria-label*="nota" i]`, `a.hfpxzc`, `div[role="article"]`). Para localizar el panel, localiza primero una entidad visible y asciende por sus ancestros en el viewport izquierdo (`rect.left < window.innerWidth * 0.65`), aceptando contenedores tanto con scroll activo como con contenido visible que encaje (`clientHeight > 200px`).
+> 2. **Caché en Memoria de Cargas Útiles de Red (Network Pre-Harvesting):**
+>    Todo interceptor de red inyectado debe almacenar en una caché persistente (`preHarvestedRpcPlaces`) todas las entidades de lugares autenticadas recibidas en llamadas Batchexecute, independientemente de si la extracción se inició formalmente o no. Cuando el usuario presiona "Iniciar", el motor carga de inmediato los lugares ya recibidos en la sesión activa (`[CACHE] Cargados N lugares`).
+> 3. **Desempaquetado Post-Order en Grafos Protobuf:**
+>    Para procesar estructuras anidadas donde los contenedores de listas envuelven elementos de lugares:
+>    - Recorre los hijos primero (post-order) para que las entidades más específicas se extraigan antes que sus contenedores padre.
+>    - Acota la recolección de cadenas al nodo inmediato y su sub-array directo (`depth <= 2`) para evitar que el contenedor de la lista absorba los IDs de los lugares hijos.
+>    - Admite marcadores huérfanos reconocidos por semántica (`Dropped pin`, `Marcador`) asignándoles identificadores sintéticos determinísticos basados en sus coordenadas.
+> 4. **Detección Inmediata de Listas Cortas:**
+>    Si el contenedor de la lista no tiene desbordamiento vertical (`scrollHeight <= clientHeight + 40`) y ya contiene lugares cosechados, el ciclo debe finalizar de inmediato (`COMPLETE`), evitando ciclos de scroll vacíos e innecesarios.

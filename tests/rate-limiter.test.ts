@@ -3,7 +3,7 @@ import { RateLimiter } from '../src/utils/rate-limiter';
 
 describe('RateLimiter', () => {
   it('applies jittered delays within specified boundaries', async () => {
-    const limiter = new RateLimiter({ minDelayMs: 20, maxDelayMs: 50, coolingIntervalCycles: 100 });
+    const limiter = new RateLimiter({ minDelayMs: 20, maxDelayMs: 50, coolingIntervalCycles: 100, microPauseProbability: 0 });
     const start = Date.now();
     const delay = await limiter.applyAdaptiveDelay();
     const elapsed = Date.now() - start;

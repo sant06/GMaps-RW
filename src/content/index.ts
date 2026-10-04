@@ -12,7 +12,7 @@ import type {
   MutationOptions,
   MutationProgressStats,
 } from '../types/messages';
-import type { MutationItemPayload } from '../types/places';
+import type { MutationItemPayload, ScrapedPlaceRecord } from '../types/places';
 import { CrossWorldBridge } from './bridge';
 import { BatchexecuteUnpacker } from '../injected/rpc-unpacker';
 import { MapsVirtualScroller } from './scroller';
@@ -147,26 +147,32 @@ bridge.onAuth((payload) => {
   }
 });
 
-// Forward intercepted Batchexecute RPC payloads to Service Worker ONLY during active extraction
-bridge.onRpc((payload) => {
-  if (!pipelinePort || !isExtractionActive) return;
+// In-memory cache of authentic places intercepted from Google Maps list RPCs
+const preHarvestedRpcPlaces = new Map<string, ScrapedPlaceRecord>();
 
+// Forward intercepted Batchexecute RPC payloads to Service Worker
+bridge.onRpc((payload) => {
   const places = BatchexecuteUnpacker.deepExtractPlaces(payload.parsedPayload || []);
   if (places.length > 0) {
-    console.log(`[Content Script] Intercepted ${places.length} places from RPC (${payload.rpcId || 'preview'}).`);
+    console.log(`[Content Script] Intercepted ${places.length} places from RPC (${payload.rpcId || 'network'}).`);
+
+    // Store verified places so they are instantly available when extraction begins
+    places.forEach((p) => preHarvestedRpcPlaces.set(p.id, p));
 
     if (activeScroller) {
       activeScroller.addPreHarvested(places);
     }
 
-    pipelinePort.postMessage({
-      type: 'EXTRACTION_STREAM_BATCH',
-      payload: {
-        items: places,
-        isTerminalBatch: false,
-        totalHarvestedSoFar: places.length,
-      },
-    } as ContentToWorkerMessage);
+    if (pipelinePort && isExtractionActive) {
+      pipelinePort.postMessage({
+        type: 'EXTRACTION_STREAM_BATCH',
+        payload: {
+          items: places,
+          isTerminalBatch: false,
+          totalHarvestedSoFar: places.length,
+        },
+      } as ContentToWorkerMessage);
+    }
   }
 });
 
@@ -183,6 +189,9 @@ async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
   }
 
   activeScroller = new MapsVirtualScroller();
+  if (preHarvestedRpcPlaces.size > 0) {
+    activeScroller.addPreHarvested(Array.from(preHarvestedRpcPlaces.values()));
+  }
 
   try {
     const finalItems = await activeScroller.runExtraction(

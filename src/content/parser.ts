@@ -76,7 +76,14 @@ export class GoogleMapsUrlParser {
     // 2. Secondary Strategy: Viewport camera fallback extraction
     // ONLY accepted if the URL explicitly denotes a place or has a known Place ID/FID,
     // preventing camera viewpoints (@lat,lng) on map overview links from being misclassified as places.
-    const isPlaceUrl = decodedUrl.includes('/place/') || decodedUrl.includes('/search/') || !!placeId || !!featureId;
+    const isPlaceUrl =
+      decodedUrl.includes('/place/') ||
+      decodedUrl.includes('/search/') ||
+      decodedUrl.includes('data=') ||
+      decodedUrl.includes('!1s') ||
+      decodedUrl.includes('!2s') ||
+      !!placeId ||
+      !!featureId;
     const viewportMatch = decodedUrl.match(this.VIEWPORT_COORD_REGEX);
     if (viewportMatch && isPlaceUrl) {
       const lat = parseFloat(viewportMatch[1]);
