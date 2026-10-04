@@ -519,4 +519,48 @@ En listas grandes (como **"Sitios destacados"** con *"Más de 200 sitios"*):
 >    - Monitorea activamente los aumentos en `scrollHeight`. Si la altura total crece, significa que la SPA acaba de inyectar nuevos registros: reinicia inmediatamente el contador de estancamiento.
 >    - Diferencia entre "estar a mitad de lista sin nuevos elementos visibles" y "estar al fondo físico del scroll". Nunca abortes por inactividad a menos que el scroll esté verdaderamente en el límite inferior (`scrollTop + clientHeight >= scrollHeight - 60`) y tras haber ejecutado rebotes de micro-scroll para reactivar las peticiones de red.
 
+---
+
+## 19. Compuerta de Término Temprano por Conteo de Cabecera, Navegación Autónoma Inter-Listas y Desempaquetado de Placelists Personalizadas sin ChIJ
+
+### Síntoma / Error
+1. **Cero lugares extraídos en listas personalizadas cortas (ej. "Mayo24" con 10 sitios):**
+   Al ingresar a la lista compartida `Mayo24` (10 sitios visibles en pantalla y en el mapa), la extensión ejecutaba 6 scrolls rápidos y terminaba con error: `Extracción finalizada sin lugares`.
+2. **Ciclos de recuperación innecesarios al llegar al final de la lista:**
+   Cuando la extensión extraía todos los lugares de una lista (ej. 10 de 10), continuaba intentando scroll y ejecutaba micro-scrolls de recuperación (`[RECOVERY] Extremo visible alcanzado...`) hasta agotar los ciclos de estancamiento.
+3. **Falta de visibilidad del progreso respecto al total esperado:**
+   El usuario no sabía cuántos lugares le faltaban por cosechar ni si la lista ya estaba completa o si faltaban elementos por cargar.
+4. **Dilema de operación manual vs. autónoma entre múltiples listas:**
+   El usuario consultó si debía ingresar manualmente a cada lista una por una o si la extensión podía recorrer todas sus listas automáticamente en un solo paso.
+
+### Causa Raíz
+1. **La Trampa de los IDs en Listas Personalizadas (Placelists de Google Maps):**
+   - En las listas creadas o compartidas por usuarios (`Placelists`), Google Maps renderiza las tarjetas en el DOM como bloques `div` sin hipervínculos `<a href="/maps/place/...">`.
+   - En la carga de red Batchexecute que entrega los elementos de la lista, Google Maps no adjunta identificadores estándar `ChIJ...` ni claves hexadecimales `0x...:0x...` en el subárbol inmediato de cada lugar; transporta identificadores de elemento de lista en Base64 (ej. `CAESY0FvQXR...`).
+   - El extractor RPC contenía la regla: `if (!effectiveId && !isDroppedPin) return null`. Dado que lugares legítimos como `"Tarapacá"` u `"Observatorio La Silla"` no contienen la palabra `"pin"` ni `"marcador"` en su título, y carecían de `ChIJ...`, el unpacker devolvía `null` para **todos y cada uno** de los lugares de la lista, descartándolos por completo.
+2. **Desconexión Temporal del Estado Inicial (`APP_INITIALIZATION_STATE`):**
+   - Cuando el usuario navegaba a una lista dentro de la SPA antes de abrir la extensión, los datos ya estaban cargados en la memoria del navegador.
+   - El script de contenido solo consultaba los lugares interceptados pasivamente y no solicitaba la re-inspección activa del estado de la ventana al iniciar el flujo de extracción.
+3. **Falta de Detección del Conteo Declarado en la Cabecera:**
+   - La cabecera de toda lista en Google Maps declara explícitamente la cantidad total de lugares: `"Santiago Montoya · Compartida · 10 sitios"`, `"Lista privada · Más de 200 sitios"`, etc.
+   - Al no leer esta cifra, el motor de scroll no sabía cuándo había completado la lista y recurría a bucles de estancamiento para decidir cuándo detenerse.
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Arquitectura de Extracción Inteligente por Conteo y Recorrido Autónomo**:
+> 1. **Compuerta de Término Temprano (Early Completion Gate):**
+>    - Extrae el conteo esperado (`expectedCount`) directamente de los subtítulos de la cabecera mediante expresiones regulares multi-idioma (`/\b(?:más de\s+)?(\d+)\s*(?:sitios?|places?|lugares?)\b/i`).
+>    - Informa el progreso en vivo (`X/Total`) en la consola en cada ciclo.
+>    - Si `harvestedMap.size >= expectedCount` (y no es aproximado), rompe inmediatamente el bucle de scroll (`break`). Esto elimina al 100% las esperas de estancamiento y los micro-scrolls innecesarios al llegar al final.
+> 2. **Sintetización Determinista de IDs para Listas Personalizadas:**
+>    - Si un elemento en la respuesta RPC posee coordenadas geográficas plausibles (`isPlausibleGeoCoordinate`) y un nombre comercial o toponímico válido (`isLegitimatePlaceTitle`), y no representa un contenedor de lista (descartando aquellos con textos como `"10 sitios"` o múltiples hijos con coordenadas), debe aceptarse de inmediato.
+>    - Si carece de identificador `ChIJ`, asígnale un identificador sintético determinista basado en su nombre y coordenadas (`generateSyntheticPlaceId(title, lat, lng)`).
+> 3. **Recorrido Autónomo Multi-Lista (Autonomous Multi-List Crawling):**
+>    - Si el usuario inicia la extracción en el **Directorio Hub** (`data=!4m2!10m1!1e1`), la extensión escanea todas las listas del usuario (`itemCount > 0`), ingresa a cada una programáticamente, cosecha sus lugares asignándoles el atributo `listTitle`, vuelve con el botón "Atrás" y avanza a la siguiente.
+>    - Todos los lugares se consolidan en una sola exportación con la columna `List Name` / `Lista` para que el usuario obtenga todos sus datos de una sola vez.
+>    - Si el usuario inicia la extracción dentro de una lista particular, se procesa exclusivamente esa lista de forma rápida y directa.
+> 4. **Hidratación Activa On-Demand (`queryInitialState`):**
+>    - Al pulsar "Start Extraction", despacha inmediatamente un mensaje al hilo principal (`QUERY_INITIAL_STATE`) para desempaquetar variables globales (`APP_INITIALIZATION_STATE`, `_pageData`, `<script>` embebidos) antes del primer ciclo de scroll, garantizando que listas ya abiertas en pantalla se hidraten al instante en la memoria de la extensión.
+
+
 

@@ -62,24 +62,51 @@ import { BatchexecuteUnpacker } from './rpc-unpacker';
     }
   }
 
-  // Scans initial host page state (APP_INITIALIZATION_STATE / _pageData) for places already hydrated on load
+  // Scans initial host page state (APP_INITIALIZATION_STATE / _pageData / script tags) for places already hydrated on load
   function inspectInitialAppState(): void {
     try {
       const win = window as unknown as Record<string, unknown>;
-      const initState = win.APP_INITIALIZATION_STATE || win._pageData || win._;
-      if (initState) {
-        const places = BatchexecuteUnpacker.deepExtractPlaces(initState);
-        if (places.length > 0) {
-          postToBridge({
-            type: 'RPC_INTERCEPTED',
-            payload: {
-              endpoint: 'APP_INITIALIZATION_STATE',
-              method: 'GET',
-              rawBody: '',
-              parsedPayload: [initState],
-              rpcId: 'initial_state',
-            },
-          });
+      const candidates = [win.APP_INITIALIZATION_STATE, win._pageData, win._];
+      for (const candidate of candidates) {
+        if (candidate) {
+          const places = BatchexecuteUnpacker.deepExtractPlaces(candidate);
+          if (places.length > 0) {
+            postToBridge({
+              type: 'RPC_INTERCEPTED',
+              payload: {
+                endpoint: 'APP_INITIALIZATION_STATE',
+                method: 'GET',
+                rawBody: '',
+                parsedPayload: [candidate],
+                rpcId: 'initial_state',
+              },
+            });
+          }
+        }
+      }
+
+      // Also scan script tags for inline JSON/WIZ arrays
+      const scripts = Array.from(document.querySelectorAll('script'));
+      for (const s of scripts) {
+        const text = s.textContent || '';
+        if (
+          text.includes('APP_INITIALIZATION_STATE') ||
+          text.includes('_pageData') ||
+          text.includes(')]}\'')
+        ) {
+          const places = BatchexecuteUnpacker.deepExtractPlaces(text);
+          if (places.length > 0) {
+            postToBridge({
+              type: 'RPC_INTERCEPTED',
+              payload: {
+                endpoint: 'INLINE_SCRIPT_STATE',
+                method: 'GET',
+                rawBody: text,
+                parsedPayload: [text],
+                rpcId: 'script_tags',
+              },
+            });
+          }
         }
       }
     } catch {
@@ -210,6 +237,12 @@ import { BatchexecuteUnpacker } from './rpc-unpacker';
     switch (data.type) {
       case 'QUERY_AUTH_CONTEXT': {
         inspectAndBroadcastAuth();
+        inspectInitialAppState();
+        break;
+      }
+
+      case 'QUERY_INITIAL_STATE' as unknown as string: {
+        inspectInitialAppState();
         break;
       }
 

@@ -188,6 +188,11 @@ async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
     return;
   }
 
+  // Actively query MAIN world to inspect initial app state (APP_INITIALIZATION_STATE, _pageData, script tags)
+  bridge.queryInitialState();
+  // Brief pause to allow unpacked places to arrive across the postMessage bridge
+  await new Promise((r) => setTimeout(r, 200));
+
   activeScroller = new MapsVirtualScroller();
   if (preHarvestedRpcPlaces.size > 0) {
     activeScroller.addPreHarvested(Array.from(preHarvestedRpcPlaces.values()));

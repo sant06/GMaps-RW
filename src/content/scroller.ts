@@ -23,6 +23,7 @@ export class MapsVirtualScroller {
   private isPaused = false;
   private isAborted = false;
   private rateLimiter: RateLimiter;
+  private currentListTitle: string | null = null;
 
   constructor(containerElement?: HTMLElement, rateLimiter?: RateLimiter) {
     this.container = containerElement || this.findPrimaryContainer();
@@ -133,8 +134,15 @@ export class MapsVirtualScroller {
     this.container = el;
   }
 
+  public setCurrentListTitle(title: string): void {
+    this.currentListTitle = title;
+  }
+
   public addPreHarvested(items: ScrapedPlaceRecord[]): void {
     for (const item of items) {
+      if (this.currentListTitle && !item.listTitle) {
+        item.listTitle = this.currentListTitle;
+      }
       if (!this.harvestedMap.has(item.id)) {
         this.harvestedMap.set(item.id, item);
       }
@@ -217,7 +225,8 @@ export class MapsVirtualScroller {
         for (let i = 0; i < targets.length; i++) {
           if (this.isAborted) break;
           const target = targets[i];
-          logCallback?.('info', 'NAV', `Abriendo automáticamente lista "${target.title}" (${target.itemCount} sitios)...`);
+          this.currentListTitle = target.title;
+          logCallback?.('info', 'NAV', `[Lista ${i + 1}/${targets.length}] Abriendo automáticamente "${target.title}" (${target.itemCount} sitios)...`);
           const opened = await this.openSavedListFromHub(target);
           if (!opened) {
             logCallback?.('warn', 'NAV', `No se pudo abrir la lista "${target.title}". Continuando...`);
@@ -225,6 +234,7 @@ export class MapsVirtualScroller {
           }
 
           // Wait for items container to mount
+          this.container = null;
           for (let attempt = 0; attempt < 10; attempt++) {
             this.container = this.findPrimaryContainer();
             if (this.container) break;
@@ -234,19 +244,20 @@ export class MapsVirtualScroller {
           if (this.container) {
             const containerDesc = `<${this.container.tagName.toLowerCase()}${this.container.className ? '.' + this.container.className.split(' ').slice(0, 2).join('.') : ''}>`;
             logCallback?.('info', 'DOM', `Contenedor de lista "${target.title}" localizado: ${containerDesc}.`);
-            await this.executeScrollHarvestLoop(progressCallback, logCallback);
+            await this.executeScrollHarvestLoop(progressCallback, logCallback, target.itemCount);
             logCallback?.('info', 'EXTRACT', `Lista "${target.title}": Procesada. Total acumulado: ${this.harvestedMap.size} lugares.`);
           }
 
           if (i < targets.length - 1) {
             logCallback?.('info', 'NAV', 'Volviendo al directorio de listas guardadas para la siguiente lista...');
             await this.clickBackButton();
+            this.container = null;
             await this.rateLimiter.sleep(1200);
           }
         }
 
         if (this.harvestedMap.size > 0) {
-          logCallback?.('info', 'SUCCESS', `Extracción completada. ${this.harvestedMap.size} lugares listos para exportar a Excel, GeoJSON, KML o CSV.`);
+          logCallback?.('info', 'SUCCESS', `¡Recorrido autónomo completado! ${this.harvestedMap.size} lugares listos para exportar a Excel, GeoJSON, KML o CSV.`);
           return Array.from(this.harvestedMap.values());
         }
       } else if (allLists.length > 0) {
@@ -289,6 +300,11 @@ export class MapsVirtualScroller {
       );
     }
 
+    const headerInfo = this.getExpectedItemCount();
+    if (headerInfo.listTitle && !this.currentListTitle) {
+      this.currentListTitle = headerInfo.listTitle;
+    }
+
     const containerDesc = `<${this.container.tagName.toLowerCase()}${this.container.className ? '.' + this.container.className.split(' ').slice(0, 2).join('.') : ''}>`;
     logCallback?.('info', 'DOM', `Contenedor de lista localizado: ${containerDesc} (ScrollHeight: ${this.container.scrollHeight}px).`);
 
@@ -318,8 +334,63 @@ export class MapsVirtualScroller {
       );
     }
 
+    if (this.currentListTitle) {
+      for (const place of this.harvestedMap.values()) {
+        if (!place.listTitle) {
+          place.listTitle = this.currentListTitle;
+        }
+      }
+    }
+
     logCallback?.('info', 'SUCCESS', `Extracción completada. ${this.harvestedMap.size} lugares listos para exportar a Excel, GeoJSON, KML o CSV.`);
     return Array.from(this.harvestedMap.values());
+  }
+
+  /**
+   * Scans the active list header for total item count (e.g. "Santiago Montoya · Compartida · 10 sitios", "Más de 200 sitios").
+   */
+  public getExpectedItemCount(): { count: number | null; isApproximate: boolean; listTitle?: string } {
+    const titleEl = document.querySelector<HTMLElement>(
+      'h1, div[role="heading"], .fontHeadlineLarge, div.m6QErb h1, div.widget-pane-content h1'
+    );
+    const listTitle = titleEl?.textContent?.trim() || undefined;
+
+    const countRegex = /\b(?:(más de|more than|plus de|über)\s+)?(\d+)\s*(?:sitios?|places?|lugares?|locais|local|lieux?|orte?|luoghi?|items?|elementos?)\b/i;
+
+    const headerContainers = [
+      '#pane',
+      'div[role="main"]',
+      'div.m6QErb',
+      'div.widget-pane-content',
+      'div.section-layout',
+    ];
+
+    for (const sel of headerContainers) {
+      const container = document.querySelector<HTMLElement>(sel);
+      if (!container) continue;
+
+      const candidates = container.querySelectorAll<HTMLElement>(
+        '.fontBodyMedium, .W4Efsd, .headlineMedium, span, div[aria-label]'
+      );
+
+      for (const el of candidates) {
+        if (el.closest('div[role="listitem"], div[role="article"], div.Nv2PK')) {
+          continue; // Skip individual place row items
+        }
+
+        const text = el.textContent || '';
+        const match = text.match(countRegex);
+        if (match) {
+          const isApproximate = Boolean(match[1]);
+          const count = parseInt(match[2], 10);
+          if (count > 0 && count < 100000) {
+            return { count, isApproximate, listTitle };
+          }
+        }
+      }
+    }
+
+    return { count: null, isApproximate: false, listTitle };
   }
 
   /**
@@ -327,9 +398,26 @@ export class MapsVirtualScroller {
    */
   private async executeScrollHarvestLoop(
     progressCallback: (stats: { count: number; newlyAdded: ScrapedPlaceRecord[]; isStagnant: boolean }) => void,
-    logCallback?: (level: 'info' | 'warn' | 'error', tag: string, message: string) => void
+    logCallback?: (level: 'info' | 'warn' | 'error', tag: string, message: string) => void,
+    hintExpectedCount?: number
   ): Promise<void> {
     if (!this.container) return;
+
+    // Detect expected count and list title
+    const headerInfo = this.getExpectedItemCount();
+    const expectedCount = hintExpectedCount !== undefined ? hintExpectedCount : headerInfo.count;
+    const isApproximate = hintExpectedCount !== undefined ? false : headerInfo.isApproximate;
+    if (headerInfo.listTitle && !this.currentListTitle) {
+      this.currentListTitle = headerInfo.listTitle;
+    }
+
+    if (expectedCount !== null && expectedCount !== undefined) {
+      logCallback?.(
+        'info',
+        'NAV',
+        `Lista "${this.currentListTitle || 'actual'}" detectada con ${isApproximate ? 'más de ' : ''}${expectedCount} sitios esperados.`
+      );
+    }
 
     // 0. Rewind container to top (0px) so virtual recycler mounts from item #1
     if (this.container.scrollTop > 50) {
@@ -339,9 +427,19 @@ export class MapsVirtualScroller {
       await this.rateLimiter.sleep(700);
     }
 
+    // If already pre-harvested and reaches expected count, complete immediately!
+    if (expectedCount !== null && expectedCount !== undefined && !isApproximate && this.harvestedMap.size >= expectedCount) {
+      logCallback?.(
+        'info',
+        'COMPLETE',
+        `¡Cosecha completa! Todos los ${this.harvestedMap.size} lugares esperados (${expectedCount} sitios) ya están en memoria.`
+      );
+      return;
+    }
+
     let lastScrollHeight = this.container.scrollHeight;
     let stagnationCycles = 0;
-    const MAX_STAGNATION_LIMIT = 8;
+    const MAX_STAGNATION_LIMIT = 6;
     let cycle = 0;
 
     while (!this.isAborted) {
@@ -365,10 +463,14 @@ export class MapsVirtualScroller {
       // 1. Synthesize hover on cards and harvest newly populated anchors
       const newlyAdded = await this.harvestVisibleElements();
 
+      const progressLabel = expectedCount !== null && expectedCount !== undefined
+        ? `${this.harvestedMap.size}/${expectedCount}`
+        : `${this.harvestedMap.size}`;
+
       if (newlyAdded.length > 0) {
         stagnationCycles = 0;
         const sampleTitles = newlyAdded.slice(0, 2).map((p) => `"${p.title}"`).join(', ');
-        logCallback?.('info', 'EXTRACT', `Ciclo #${cycle}: Extraídos +${newlyAdded.length} lugares (${sampleTitles}). Total: ${this.harvestedMap.size}`);
+        logCallback?.('info', 'EXTRACT', `Ciclo #${cycle}: Extraídos +${newlyAdded.length} lugares (${sampleTitles}). Total: ${progressLabel}`);
       } else {
         stagnationCycles++;
       }
@@ -378,6 +480,16 @@ export class MapsVirtualScroller {
         newlyAdded,
         isStagnant: stagnationCycles > 0,
       });
+
+      // Early completion gate: If we have reached the expected count, terminate immediately!
+      if (expectedCount !== null && expectedCount !== undefined && !isApproximate && this.harvestedMap.size >= expectedCount) {
+        logCallback?.(
+          'info',
+          'COMPLETE',
+          `¡Todos los ${this.harvestedMap.size} lugares esperados (${expectedCount} sitios) fueron cosechados exitosamente!`
+        );
+        break;
+      }
 
       // If the list is short and already fully displayed in the viewport (e.g. 5-15 items),
       // terminate immediately once items are harvested without unnecessary scroll spinning.
@@ -394,7 +506,16 @@ export class MapsVirtualScroller {
       const isAtBottom = this.container.scrollTop + this.container.clientHeight >= this.container.scrollHeight - 60;
 
       // Sentinel or stagnation termination evaluation
-      if (this.detectTerminalSentinel() || (isAtBottom && stagnationCycles >= 3)) {
+      if (this.detectTerminalSentinel() || (isAtBottom && stagnationCycles >= 2)) {
+        if (expectedCount !== null && expectedCount !== undefined && this.harvestedMap.size >= expectedCount) {
+          logCallback?.(
+            'info',
+            'COMPLETE',
+            `Final alcanzado con ${this.harvestedMap.size}/${expectedCount} lugares cosechados. Finalizando.`
+          );
+          break;
+        }
+
         logCallback?.('warn', 'RECOVERY', `Ciclo #${cycle}: Extremo visible alcanzado. Ejecutando micro-scroll para disparar carga de más elementos...`);
         // Recovery routine: scroll backward slightly then forward to trigger Google intersection observers
         this.performActiveScroll(-300);
@@ -410,10 +531,14 @@ export class MapsVirtualScroller {
             const sample = recoveryAdded.slice(0, 2).map((p) => `"${p.title}"`).join(', ');
             logCallback?.('info', 'EXTRACT', `Recuperación exitosa: +${recoveryAdded.length} lugares (${sample}). Total: ${this.harvestedMap.size}`);
           }
+          if (expectedCount !== null && expectedCount !== undefined && !isApproximate && this.harvestedMap.size >= expectedCount) {
+            logCallback?.('info', 'COMPLETE', `¡Todos los ${this.harvestedMap.size} lugares esperados fueron cosechados!`);
+            break;
+          }
           continue;
         }
 
-        if (stagnationCycles >= MAX_STAGNATION_LIMIT) {
+        if (stagnationCycles >= MAX_STAGNATION_LIMIT || (isAtBottom && this.harvestedMap.size > 0)) {
           logCallback?.('info', 'COMPLETE', `Ciclo #${cycle}: Final de la lista alcanzado (${this.harvestedMap.size} lugares extraídos tras ${cycle} ciclos).`);
           break;
         }
@@ -422,7 +547,7 @@ export class MapsVirtualScroller {
       // Variable downward scroll increment (350px - 520px)
       const variableStep = Math.floor(Math.random() * (520 - 350 + 1)) + 350;
       this.performActiveScroll(variableStep);
-      logCallback?.('info', 'SCROLL', `Ciclo #${cycle}: Scroll +${variableStep}px (Posición: ${Math.round(this.container.scrollTop)}px). Lugares: ${this.harvestedMap.size}.`);
+      logCallback?.('info', 'SCROLL', `Ciclo #${cycle}: Scroll +${variableStep}px (Posición: ${Math.round(this.container.scrollTop)}px). Lugares: ${progressLabel}.`);
 
       // Fast, responsive delay (300ms - 550ms)
       await this.rateLimiter.applyAdaptiveDelay();
@@ -852,6 +977,7 @@ export class MapsVirtualScroller {
           placeId: parsedCoords.placeId,
           featureId: parsedCoords.featureId,
           cid: parsedCoords.cid,
+          listTitle: this.currentListTitle || undefined,
           address,
           userNote,
           isClosed,
@@ -898,6 +1024,7 @@ export class MapsVirtualScroller {
               latitude: titleLat,
               longitude: titleLng,
               isHighPrecision: true,
+              listTitle: this.currentListTitle || undefined,
               address,
               userNote,
               isClosed: false,
@@ -928,6 +1055,7 @@ export class MapsVirtualScroller {
               isHighPrecision: parsed.isHighPrecision,
               placeId: parsed.placeId,
               featureId: parsed.featureId,
+              listTitle: this.currentListTitle || undefined,
               address,
               userNote,
               extractedAt: new Date().toISOString(),
@@ -944,6 +1072,7 @@ export class MapsVirtualScroller {
         if (record.title.toLowerCase() === title.toLowerCase()) {
           if (userNote && !record.userNote) record.userNote = userNote;
           if (address && !record.address) record.address = address;
+          if (this.currentListTitle && !record.listTitle) record.listTitle = this.currentListTitle;
           break;
         }
       }

@@ -125,7 +125,32 @@ export class BatchexecuteUnpacker {
     const seenPlaceIds = new Set<string>();
 
     function traverse(node: unknown) {
-      if (!node || typeof node !== 'object' || visited.has(node)) return;
+      if (!node) return;
+
+      // Unpack stringified Batchexecute chunks or JSON arrays (common in APP_INITIALIZATION_STATE and _pageData)
+      if (typeof node === 'string') {
+        const trimmed = node.trim();
+        if (trimmed.startsWith(')]}\'') || (trimmed.startsWith('[[') && trimmed.endsWith(']]'))) {
+          try {
+            const unpacked = BatchexecuteUnpacker.unpack(trimmed);
+            for (const item of unpacked) {
+              traverse(item.rawJson);
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        } else if (trimmed.startsWith('[') && trimmed.endsWith(']') && trimmed.length > 20) {
+          try {
+            const parsed = JSON.parse(trimmed);
+            traverse(parsed);
+          } catch {
+            // Ignore parse errors
+          }
+        }
+        return;
+      }
+
+      if (typeof node !== 'object' || visited.has(node)) return;
       visited.add(node);
 
       if (Array.isArray(node)) {
@@ -154,7 +179,7 @@ export class BatchexecuteUnpacker {
    * Recursively collects strings within a candidate node (direct strings and sub-array strings).
    */
   private static collectStrings(node: unknown, depth = 0, bucket: string[] = []): string[] {
-    if (depth > 2 || !node) return bucket;
+    if (depth > 4 || !node) return bucket;
     if (typeof node === 'string') {
       const trimmed = node.trim();
       if (trimmed) bucket.push(trimmed);
@@ -246,9 +271,26 @@ export class BatchexecuteUnpacker {
       return null;
     }
 
-    // Collect all strings in this subtree (depth <= 3)
+    // Collect all strings in this subtree (depth <= 4)
     const strings = BatchexecuteUnpacker.collectStrings(arr);
     if (strings.length === 0) return null;
+
+    // Reject list container arrays that describe lists rather than single places
+    const isListMetadata = strings.some(
+      (s) =>
+        /\b\d+\s*(?:sitios?|places?|lugares?|items?|elementos?)\b/i.test(s) ||
+        /^(?:compartida|privada|shared|private|pública|public)$/i.test(s)
+    );
+    if (isListMetadata) return null;
+
+    // If multiple direct children contain coordinate subtrees, this array is a list collection, not an individual place
+    let directChildWithCoordsCount = 0;
+    for (const child of arr) {
+      if (child && typeof child === 'object' && BatchexecuteUnpacker.findDeepCoords(child, 1)) {
+        directChildWithCoordsCount++;
+        if (directChildWithCoordsCount > 1) return null;
+      }
+    }
 
     let placeId: string | undefined;
     let featureId: string | undefined;
@@ -295,23 +337,6 @@ export class BatchexecuteUnpacker {
     if (!title) return null;
 
     const effectiveId = placeId || featureId;
-    const isCoordTitle =
-      /^\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?$/.test(title) ||
-      /^\d{1,2}°\d{1,2}'[\d\.]+"?[NS]\s+\d{1,3}°\d{1,2}'[\d\.]+"?[EW]$/i.test(title);
-
-    const isDroppedPin =
-      title.toLowerCase().includes('pin') ||
-      title.toLowerCase().includes('marcador') ||
-      title.toLowerCase().includes('chincheta') ||
-      title.toLowerCase().includes('dropped') ||
-      isCoordTitle;
-
-    // Every authentic place entity MUST have a Place ID (ChIJ...) or Hex Feature ID (0x...),
-    // EXCEPT dropped pins/markers/raw coordinates which are identified by their pin title.
-    if (!effectiveId && !isDroppedPin) {
-      return null;
-    }
-
     const finalId = effectiveId || generateSyntheticPlaceId(title, coords.lat, coords.lng);
 
     return {

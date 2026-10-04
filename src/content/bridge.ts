@@ -102,6 +102,17 @@ export class CrossWorldBridge {
     window.postMessage(msg, window.location.origin);
   }
 
+  public queryInitialState(): void {
+    const msg = {
+      source: BRIDGE_SOURCE_ISOLATED,
+      nonce: this.nonce,
+      type: 'QUERY_INITIAL_STATE',
+      payload: {},
+      timestamp: Date.now(),
+    };
+    window.postMessage(msg, window.location.origin);
+  }
+
   private initMessageListener(): void {
     window.addEventListener('message', (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;

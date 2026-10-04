@@ -166,6 +166,44 @@ describe('BatchexecuteUnpacker', () => {
     expect(extracted[0].longitude).toBeCloseTo(58.439703, 5);
   });
 
+  it('correctly extracts places from custom placelists that lack explicit ChIJ Place IDs (e.g. Mayo24)', () => {
+    const mockCustomPlacelist = [
+      'list_metadata',
+      [
+        'Mayo24',
+        '10 sitios',
+        [
+          [
+            'CAESY0FvQXR1234567890',
+            ['Observatorio La Silla', 'Chile'],
+            null,
+            [-29.2563, -70.738],
+            'Hermosa vista de las estrellas',
+          ],
+          [
+            'CAESY0FvQXR0987654321',
+            ['Tarapacá', 'Chile'],
+            null,
+            [-20.2138, -69.324],
+          ],
+        ],
+      ],
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces(mockCustomPlacelist);
+    expect(extracted.length).toBe(2);
+    expect(extracted[0].title).toBe('Observatorio La Silla');
+    expect(extracted[0].address).toBe('Chile');
+    expect(extracted[0].latitude).toBeCloseTo(-29.2563, 4);
+    expect(extracted[0].longitude).toBeCloseTo(-70.738, 4);
+    expect(extracted[0].userNote).toBe('Hermosa vista de las estrellas');
+
+    expect(extracted[1].title).toBe('Tarapacá');
+    expect(extracted[1].address).toBe('Chile');
+    expect(extracted[1].latitude).toBeCloseTo(-20.2138, 4);
+    expect(extracted[1].longitude).toBeCloseTo(-69.324, 4);
+  });
+
   it('fails gracefully on empty or malformed strings without throwing', () => {
     expect(BatchexecuteUnpacker.unpack('')).toEqual([]);
     expect(BatchexecuteUnpacker.unpack(')]}\'\nrandom non-json garbage')).toEqual([]);
