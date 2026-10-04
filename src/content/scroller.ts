@@ -326,6 +326,17 @@ export class MapsVirtualScroller {
         childAction.dispatchEvent(new MouseEvent('mouseover', pointerProps));
         childAction.dispatchEvent(new MouseEvent('mouseenter', pointerProps));
       }
+
+      // Trigger focus and focusin on the place anchor (activates Google Maps a11y URL hydration without mouse)
+      const anchor = card.tagName === 'A' ? (card as HTMLAnchorElement) : card.querySelector<HTMLAnchorElement>('a.hfpxzc, a[href*="/place/"]');
+      if (anchor) {
+        try {
+          anchor.focus();
+          anchor.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+        } catch {
+          // Ignore focus errors
+        }
+      }
     });
 
     // Critical: Yield execution to allow Google Maps event handlers to run and mutate DOM attributes

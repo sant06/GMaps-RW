@@ -59,8 +59,10 @@ import { BatchexecuteUnpacker } from './rpc-unpacker';
     }
   }
 
-  // Initial auth broadcast
+  // Initial auth broadcast with retries for late WIZ hydration
   setTimeout(inspectAndBroadcastAuth, 500);
+  setTimeout(inspectAndBroadcastAuth, 1500);
+  setTimeout(inspectAndBroadcastAuth, 3500);
 
   // ==========================================================================
   // 1. MONKEY-PATCH NATIVE fetch API
