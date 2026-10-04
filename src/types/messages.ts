@@ -197,6 +197,7 @@ export type WorkerToContentMessage =
 export type SidePanelToWorkerMessage =
   | { type: 'UI_READY' }
   | { type: 'GET_PIPELINE_STATE' }
+  | { type: 'HEARTBEAT_PING'; payload?: HeartbeatPayload }
   | { type: 'REQUEST_START_EXTRACTION'; payload: ExtractionOptions }
   | { type: 'REQUEST_PAUSE_EXTRACTION' }
   | { type: 'REQUEST_RESUME_EXTRACTION' }

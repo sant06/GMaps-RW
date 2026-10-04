@@ -13,6 +13,7 @@ export class GoogleMapsUrlParser {
   private static readonly PLACE_ID_REGEX = /!(?:1s|19s)(ChIJ[a-zA-Z0-9_-]{23,})/;
   private static readonly HEX_FEATURE_ID_REGEX = /!(?:1s|2s)(0x[0-9a-fA-F]+:0x[0-9a-fA-F]+)/;
   private static readonly CID_PARAM_REGEX = /[?&]cid=(\d+)/;
+  private static readonly QUERY_COORD_REGEX = /[?&](?:q|ll|center)=(-?\d+\.\d+),(-?\d+\.\d+)/;
 
   /**
    * Decodes latitude, longitude, and identifiers from any Google Maps URL.
@@ -69,6 +70,22 @@ export class GoogleMapsUrlParser {
           latitude: lat,
           longitude: lng,
           isHighPrecision: false,
+          placeId: this.extractPlaceId(decodedUrl),
+          featureId: this.extractFeatureId(decodedUrl),
+        };
+      }
+    }
+
+    // 3. Tertiary Strategy: Explicit query parameter extraction (?q=lat,lng, ll=lat,lng, center=lat,lng)
+    const queryMatch = decodedUrl.match(this.QUERY_COORD_REGEX);
+    if (queryMatch) {
+      const lat = parseFloat(queryMatch[1]);
+      const lng = parseFloat(queryMatch[2]);
+      if (isValidCoordinate(lat, lng)) {
+        return {
+          latitude: lat,
+          longitude: lng,
+          isHighPrecision: true,
           placeId: this.extractPlaceId(decodedUrl),
           featureId: this.extractFeatureId(decodedUrl),
         };

@@ -92,12 +92,38 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
 // ============================================================================
 // PORT CONNECTION & MESSAGE DISPATCH
 // ============================================================================
+let sidepanelHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let extractionStartTime = 0;
+
+function startSidepanelHeartbeat(): void {
+  if (sidepanelHeartbeatTimer) clearInterval(sidepanelHeartbeatTimer);
+  sidepanelHeartbeatTimer = setInterval(() => {
+    if (backgroundPort) {
+      try {
+        backgroundPort.postMessage({ type: 'HEARTBEAT_PING' } as SidePanelToWorkerMessage);
+      } catch (err) {
+        console.warn('[SidePanel] Heartbeat failed:', err);
+      }
+    }
+  }, 15000);
+}
+
+function stopSidepanelHeartbeat(): void {
+  if (sidepanelHeartbeatTimer) {
+    clearInterval(sidepanelHeartbeatTimer);
+    sidepanelHeartbeatTimer = null;
+  }
+}
+
 function connectToBackground(): void {
   try {
     backgroundPort = chrome.runtime.connect({ name: SIDEPANEL_PORT_NAME });
     backgroundPort.onMessage.addListener(handleWorkerMessage);
 
+    startSidepanelHeartbeat();
+
     backgroundPort.onDisconnect.addListener(() => {
+      stopSidepanelHeartbeat();
       backgroundPort = null;
       updateConnectionStatus(false);
       logEntry('warn', 'Disconnected from service worker. Reconnecting in 2s...');
@@ -108,6 +134,7 @@ function connectToBackground(): void {
     logEntry('info', 'Connected to Background Service Worker.');
     backgroundPort.postMessage({ type: 'GET_PIPELINE_STATE' } as SidePanelToWorkerMessage);
   } catch {
+    stopSidepanelHeartbeat();
     updateConnectionStatus(false);
     setTimeout(connectToBackground, 3000);
   }
@@ -143,11 +170,25 @@ function handleWorkerMessage(msg: WorkerToSidePanelMessage): void {
       }
       break;
 
-    case 'ITEMS_HARVESTED_UPDATE':
+    case 'ITEMS_HARVESTED_UPDATE': {
       msg.payload.newlyAdded.forEach((item) => harvestedPlaces.set(item.id, item));
       if (elMetricHarvested) elMetricHarvested.textContent = String(harvestedPlaces.size);
+      
+      // Calculate dynamic extraction velocity and update UI
+      if (extractionStartTime > 0 && elMetricVelocity) {
+        const elapsedSec = (Date.now() - extractionStartTime) / 1000;
+        if (elapsedSec > 0) {
+          const velocity = harvestedPlaces.size / elapsedSec;
+          elMetricVelocity.textContent = `${velocity.toFixed(1)}/s`;
+        }
+      }
+
+      if (msg.payload.newlyAdded.length > 0) {
+        logEntry('info', `Extracted ${msg.payload.newlyAdded.length} places (Total: ${harvestedPlaces.size})`);
+      }
       updateExportButtonsState();
       break;
+    }
 
     case 'LIVE_MUTATION_PROGRESS':
       updateMutationProgressDisplay(msg.payload);
@@ -225,6 +266,7 @@ btnClearLogs?.addEventListener('click', () => {
 // ============================================================================
 btnStartExtract?.addEventListener('click', () => {
   const mode = (selectExtractionMode?.value || 'hybrid') as 'hybrid' | 'rpc_only' | 'dom_only';
+  extractionStartTime = Date.now();
 
   backgroundPort?.postMessage({
     type: 'REQUEST_START_EXTRACTION',
@@ -259,6 +301,7 @@ btnAbortExtract?.addEventListener('click', () => {
 });
 
 function resetExtractionUiState(): void {
+  extractionStartTime = 0;
   if (btnStartExtract) btnStartExtract.disabled = false;
   if (btnPauseExtract) {
     btnPauseExtract.disabled = true;

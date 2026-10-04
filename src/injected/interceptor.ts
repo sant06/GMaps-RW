@@ -30,6 +30,10 @@ import { BatchexecuteUnpacker } from './rpc-unpacker';
     'batchexecute',
     '/maps/rpc/',
     '/search?tbm=map',
+    'userplaces',
+    'entity',
+    '/maps/api/place/',
+    'collection',
   ];
 
   // PostMessage dispatch helper

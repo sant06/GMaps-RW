@@ -171,20 +171,31 @@ export class BatchexecuteUnpacker {
         if (/^0x[0-9a-fA-F]+:0x[0-9a-fA-F]+$/.test(elem) && !placeId) {
           placeId = elem;
         }
-      } else if (Array.isArray(elem) && elem.length === 2) {
-        // Coordinate pair: [lat, lng] or [latE7, lngE7]
-        const [n1, n2] = elem;
-        if (typeof n1 === 'number' && typeof n2 === 'number') {
-          // Floating point coordinates
-          if (isValidCoordinate(n1, n2) && lat === undefined) {
-            lat = n1;
-            lng = n2;
+      } else if (Array.isArray(elem) && elem.length >= 2) {
+        // Scan for adjacent coordinates in array (supports [lat, lng], [null, null, lat, lng], [lat, lng, zoom])
+        for (let i = 0; i < elem.length - 1; i++) {
+          const n1 = elem[i];
+          const n2 = elem[i + 1];
+          if (typeof n1 === 'number' && typeof n2 === 'number') {
+            if (isValidCoordinate(n1, n2) && (Math.abs(n1) > 0.0001 || Math.abs(n2) > 0.0001) && lat === undefined) {
+              lat = n1;
+              lng = n2;
+              break;
+            } else if (isValidCoordinate(n1 / 1e7, n2 / 1e7) && Math.abs(n1) > 1000 && lat === undefined) {
+              lat = n1 / 1e7;
+              lng = n2 / 1e7;
+              break;
+            }
           }
-          // E7 integer coordinates
-          else if (isValidCoordinate(n1 / 1e7, n2 / 1e7) && lat === undefined) {
-            lat = n1 / 1e7;
-            lng = n2 / 1e7;
-          }
+        }
+      } else if (elem && typeof elem === 'object' && !Array.isArray(elem)) {
+        // Support { lat, lng } or { latitude, longitude } objects
+        const obj = elem as Record<string, unknown>;
+        const objLat = typeof obj.lat === 'number' ? obj.lat : typeof obj.latitude === 'number' ? obj.latitude : undefined;
+        const objLng = typeof obj.lng === 'number' ? obj.lng : typeof obj.longitude === 'number' ? obj.longitude : undefined;
+        if (objLat !== undefined && objLng !== undefined && isValidCoordinate(objLat, objLng) && lat === undefined) {
+          lat = objLat;
+          lng = objLng;
         }
       }
     }

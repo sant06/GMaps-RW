@@ -34,6 +34,16 @@ describe('GoogleMapsUrlParser', () => {
     expect(parsed?.longitude).toBeCloseTo(-58.381592, 5);
   });
 
+  it('extracts coordinates from query parameters (?q=lat,lng or ll=lat,lng)', () => {
+    const url = 'https://www.google.com/maps?q=-34.603722,-58.381592';
+    const parsed = GoogleMapsUrlParser.parse(url);
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.latitude).toBeCloseTo(-34.603722, 5);
+    expect(parsed?.longitude).toBeCloseTo(-58.381592, 5);
+    expect(parsed?.isHighPrecision).toBe(true);
+  });
+
   it('returns null on invalid or empty URLs', () => {
     expect(GoogleMapsUrlParser.parse('')).toBeNull();
     expect(GoogleMapsUrlParser.parse('https://www.google.com/search?q=test')).toBeNull();

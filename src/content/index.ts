@@ -28,6 +28,8 @@ const mutationRateLimiter = new RateLimiter({ minDelayMs: 1200, maxDelayMs: 2500
 
 let pipelinePort: chrome.runtime.Port | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let heartbeatSeq = 0;
 let activeScroller: MapsVirtualScroller | null = null;
 
 // Mutation state
@@ -45,6 +47,30 @@ if (document.readyState === 'loading') {
   bridge.injectInterceptor();
 }
 
+function startClientHeartbeat(): void {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  // Pinging the Service Worker from active DOM context every 15s keeps the MV3 SW alive indefinitely
+  heartbeatTimer = setInterval(() => {
+    if (pipelinePort) {
+      try {
+        pipelinePort.postMessage({
+          type: 'HEARTBEAT_PING',
+          payload: { sequence: ++heartbeatSeq, timestamp: Date.now() },
+        } as ContentToWorkerMessage);
+      } catch (err) {
+        console.warn('[Content Script] Heartbeat ping failed:', err);
+      }
+    }
+  }, 15000);
+}
+
+function stopClientHeartbeat(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
 function connectToBackground(): void {
   try {
     if (reconnectTimer) {
@@ -54,6 +80,8 @@ function connectToBackground(): void {
 
     pipelinePort = chrome.runtime.connect({ name: PIPELINE_PORT_NAME });
     console.log('[Content Script] Connected to Background SW port.');
+
+    startClientHeartbeat();
 
     const feed = document.querySelector('div[role="feed"]');
     const titleEl = document.querySelector('h1, div[role="heading"]');
@@ -72,11 +100,13 @@ function connectToBackground(): void {
 
     pipelinePort.onDisconnect.addListener(() => {
       console.warn('[Content Script] Pipeline port disconnected. Scheduling reconnect in 2.5s...');
+      stopClientHeartbeat();
       pipelinePort = null;
       reconnectTimer = setTimeout(connectToBackground, 2500);
     });
   } catch (err) {
     console.error('[Content Script] Failed to connect to background pipeline:', err);
+    stopClientHeartbeat();
     reconnectTimer = setTimeout(connectToBackground, 4000);
   }
 }

@@ -1,7 +1,8 @@
 /**
  * Virtualized DOM Harvester for Google Maps scrollable containers.
  * Traverses virtualized feeds (div[role="feed"]), handles recycled DOM elements,
- * decodes high-precision URL parameters (!3d/!4d), and applies anti-throttling jitter.
+ * synthesizes programmatic hover events on cards to force coordinate population,
+ * and executes multi-modal active scrolling with zero manual nudges required.
  */
 
 import type { ScrapedPlaceRecord } from '../types/places';
@@ -18,7 +19,15 @@ export class MapsVirtualScroller {
 
   constructor(containerElement?: HTMLElement, rateLimiter?: RateLimiter) {
     this.container = containerElement || this.findPrimaryContainer();
-    this.rateLimiter = rateLimiter || new RateLimiter();
+    // Fast, responsive extraction delay (300ms - 600ms) for high-speed local DOM harvesting
+    this.rateLimiter =
+      rateLimiter ||
+      new RateLimiter({
+        minDelayMs: 300,
+        maxDelayMs: 600,
+        coolingIntervalCycles: 70,
+        coolingDurationMs: 1500,
+      });
   }
 
   /**
@@ -66,7 +75,6 @@ export class MapsVirtualScroller {
     for (const div of allDivs) {
       if (div.clientHeight > 200 && div.scrollHeight > div.clientHeight + 80) {
         const rect = div.getBoundingClientRect();
-        // Check if placed in the left-hand panel area (where list items live)
         if (rect.left < window.innerWidth * 0.6 && rect.width > 200) {
           return div;
         }
@@ -94,7 +102,48 @@ export class MapsVirtualScroller {
   }
 
   /**
-   * Executes the full scrolling harvesting loop with recovery checks and terminal sentinel detection.
+   * Executes multi-modal active scrolling to guarantee that Google Maps virtual
+   * observers, wheel listeners, and layout recyclers fire deterministically.
+   */
+  private performActiveScroll(deltaPixels: number): void {
+    if (!this.container) return;
+
+    // 1. Direct scrollTop advancement (instantaneous, no smooth scroll animation latency)
+    this.container.scrollTop += deltaPixels;
+
+    // 2. Dispatch synthetic scroll and wheel events on the container
+    this.container.dispatchEvent(new Event('scroll', { bubbles: true }));
+    this.container.dispatchEvent(
+      new WheelEvent('wheel', {
+        deltaY: deltaPixels,
+        deltaMode: 0,
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+
+    // 3. Also dispatch keyboard PageDown / ArrowDown event
+    this.container.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: deltaPixels > 0 ? 'PageDown' : 'PageUp',
+        code: deltaPixels > 0 ? 'PageDown' : 'PageUp',
+        bubbles: true,
+      })
+    );
+
+    // 4. Check scrollable parent/ancestor fallback
+    let parent = this.container.parentElement;
+    while (parent && parent !== document.body) {
+      if (parent.scrollHeight > parent.clientHeight) {
+        parent.scrollTop += deltaPixels;
+        parent.dispatchEvent(new Event('scroll', { bubbles: true }));
+      }
+      parent = parent.parentElement;
+    }
+  }
+
+  /**
+   * Executes the full scrolling harvesting loop with automatic synthetic hover nudges.
    */
   public async runExtraction(
     progressCallback: (stats: { count: number; newlyAdded: ScrapedPlaceRecord[]; isStagnant: boolean }) => void
@@ -107,7 +156,7 @@ export class MapsVirtualScroller {
     if (!this.container) {
       const opened = await this.tryAutoOpenSavedPanel();
       if (opened) {
-        await this.rateLimiter.sleep(1200);
+        await this.rateLimiter.sleep(1000);
         this.container = this.findPrimaryContainer();
       }
     }
@@ -119,16 +168,18 @@ export class MapsVirtualScroller {
     }
 
     let stagnationCycles = 0;
-    const MAX_STAGNATION_LIMIT = 5;
+    const MAX_STAGNATION_LIMIT = 6;
 
     while (!this.isAborted) {
       if (this.isPaused) {
-        await this.rateLimiter.sleep(500);
+        await this.rateLimiter.sleep(400);
         continue;
       }
 
       const initialCount = this.harvestedMap.size;
-      const newlyAdded = this.harvestVisibleElements();
+
+      // 1. Synthesize hover on cards and harvest newly populated anchors
+      const newlyAdded = await this.harvestVisibleElements();
 
       if (newlyAdded.length === 0) {
         stagnationCycles++;
@@ -145,12 +196,12 @@ export class MapsVirtualScroller {
       // Sentinel or stagnation termination evaluation
       if (this.detectTerminalSentinel() || stagnationCycles >= MAX_STAGNATION_LIMIT) {
         // Recovery routine: scroll backward slightly to re-trigger Google intersection observers
-        this.container.scrollBy({ top: -350, behavior: 'smooth' });
-        await this.rateLimiter.sleep(800);
-        this.container.scrollTo({ top: this.container.scrollHeight, behavior: 'smooth' });
-        await this.rateLimiter.sleep(1200);
+        this.performActiveScroll(-350);
+        await this.rateLimiter.sleep(500);
+        this.performActiveScroll(450);
+        await this.rateLimiter.sleep(600);
 
-        const recoveryAdded = this.harvestVisibleElements();
+        const recoveryAdded = await this.harvestVisibleElements();
         if (recoveryAdded.length > 0) {
           stagnationCycles = 0;
           continue;
@@ -162,11 +213,11 @@ export class MapsVirtualScroller {
         }
       }
 
-      // Smooth, variable downward scroll step (280px - 450px)
-      const variableStep = Math.floor(Math.random() * (450 - 280 + 1)) + 280;
-      this.container.scrollBy({ top: variableStep, behavior: 'smooth' });
+      // Variable downward scroll increment (350px - 520px)
+      const variableStep = Math.floor(Math.random() * (520 - 350 + 1)) + 350;
+      this.performActiveScroll(variableStep);
 
-      // Apply anti-throttling delay
+      // Fast, responsive delay (300ms - 550ms)
       await this.rateLimiter.applyAdaptiveDelay();
     }
 
@@ -209,21 +260,98 @@ export class MapsVirtualScroller {
   }
 
   /**
+   * Dispatches synthetic hover/pointer events on all visible place cards,
+   * forcing Google Maps to mount and populate high-precision URLs (!3d/!4d)
+   * without requiring any physical manual hover or mouse movements from the user.
+   */
+  private async triggerSyntheticHovers(root: HTMLElement | Document): Promise<void> {
+    const cardSelectors = [
+      'div[role="article"]',
+      'div.Nv2PK',
+      'div[jsaction*="place"]',
+      'div[jsaction*="entity"]',
+      'div[jsaction*="hover"]',
+      'div[jsaction*="mouseover"]',
+      'div[data-item-id]',
+      'div.m6QErb > div',
+      'a.hfpxzc',
+      'button[aria-label][jsaction*="pin"]',
+      'div[role="button"][aria-label]',
+    ];
+
+    const cards = root.querySelectorAll<HTMLElement>(cardSelectors.join(', '));
+    if (cards.length === 0) return;
+
+    cards.forEach((card) => {
+      const rect = card.getBoundingClientRect();
+      const clientX = Math.max(10, Math.floor(rect.left + Math.min(rect.width / 2, 50)));
+      const clientY = Math.max(10, Math.floor(rect.top + Math.min(rect.height / 2, 50)));
+
+      const pointerProps = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX,
+        clientY,
+      };
+
+      card.dispatchEvent(new PointerEvent('pointerover', pointerProps));
+      card.dispatchEvent(new PointerEvent('pointerenter', pointerProps));
+      card.dispatchEvent(new MouseEvent('mouseover', pointerProps));
+      card.dispatchEvent(new MouseEvent('mouseenter', pointerProps));
+      card.dispatchEvent(new MouseEvent('mousemove', pointerProps));
+
+      // Also trigger on child action targets
+      const childAction = card.querySelector<HTMLElement>('a, button, [jsaction*="click"]');
+      if (childAction && childAction !== card) {
+        childAction.dispatchEvent(new MouseEvent('mouseover', pointerProps));
+        childAction.dispatchEvent(new MouseEvent('mouseenter', pointerProps));
+      }
+    });
+
+    // Critical: Yield execution to allow Google Maps event handlers to run and mutate DOM attributes
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  }
+
+  /**
    * Scans currently mounted DOM nodes within the container.
    */
-  public harvestVisibleElements(): ScrapedPlaceRecord[] {
+  public async harvestVisibleElements(): Promise<ScrapedPlaceRecord[]> {
     const root = this.container || document;
+
+    // 1. Synthesize hover on visible cards to populate unattached coordinate links
+    await this.triggerSyntheticHovers(root);
+
     const newlyAdded: ScrapedPlaceRecord[] = [];
-    const anchors = root.querySelectorAll<HTMLAnchorElement>('a[href*="/maps/place/"], a[href*="/place/"]');
+
+    // 2. Query all candidate anchors
+    const anchorSelectors = [
+      'a[href*="/maps/place/"]',
+      'a[href*="/place/"]',
+      'a[href*="/maps/search/"]',
+      'a[href*="/maps/@"]',
+      'a[href*="google.com/maps"]',
+      'a[data-href*="/maps/place/"]',
+      'a[data-href*="/place/"]',
+      'a.hfpxzc',
+    ];
+
+    const anchors = new Set<HTMLAnchorElement>();
+    root.querySelectorAll<HTMLAnchorElement>(anchorSelectors.join(', ')).forEach((a) => anchors.add(a));
+
+    // Also check global tooltips/previews in case Google renders them at document level
+    document.querySelectorAll<HTMLAnchorElement>('div[role="tooltip"] a, div[role="dialog"] a').forEach((a) => anchors.add(a));
 
     anchors.forEach((anchor) => {
-      const url = anchor.href;
+      const url = anchor.href || anchor.getAttribute('data-href') || '';
       const parsedCoords = GoogleMapsUrlParser.parse(url);
       if (!parsedCoords) return;
 
       const title =
         anchor.getAttribute('aria-label') ||
         anchor.querySelector('[role="heading"]')?.textContent?.trim() ||
+        anchor.closest('div[role="article"], div.Nv2PK')?.querySelector('.fontHeadlineSmall, .qBF1Pd, [role="heading"], span.OSrXXb')?.textContent?.trim() ||
         '';
 
       if (!title) return;
@@ -234,13 +362,16 @@ export class MapsVirtualScroller {
         generateSyntheticPlaceId(title, parsedCoords.latitude, parsedCoords.longitude);
 
       if (!this.harvestedMap.has(id)) {
-        const cardParent = anchor.closest('div[jsaction], div[role="article"]') || anchor.parentElement;
+        const cardParent = anchor.closest('div[jsaction], div[role="article"], div.Nv2PK') || anchor.parentElement;
         const noteEl = cardParent?.querySelector('div[data-note], [aria-label*="note" i], span[class*="note" i]');
         const userNote = noteEl?.textContent?.trim() || undefined;
 
+        const cardText = cardParent?.textContent || '';
         const isClosed =
-          cardParent?.textContent?.includes('Permanently closed') ||
-          cardParent?.textContent?.includes('Temporarily closed') ||
+          cardText.includes('Permanently closed') ||
+          cardText.includes('Temporarily closed') ||
+          cardText.includes('Cerrado permanentemente') ||
+          cardText.includes('Cerrado temporalmente') ||
           false;
 
         const record: ScrapedPlaceRecord = {

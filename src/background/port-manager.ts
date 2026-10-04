@@ -197,6 +197,7 @@ export class PortManager {
   private async processSidePanelMessage(msg: SidePanelToWorkerMessage): Promise<void> {
     switch (msg.type) {
       case 'GET_PIPELINE_STATE':
+      case 'HEARTBEAT_PING':
         await this.broadcastStateSnapshot();
         break;
 

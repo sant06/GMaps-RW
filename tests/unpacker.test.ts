@@ -37,6 +37,32 @@ describe('BatchexecuteUnpacker', () => {
     expect(extracted[0].placeId).toBe('ChIJ47Xb3fRhKRMRK8q6h7Q1');
   });
 
+  it('decodes coordinates from extended arrays ([null, null, lat, lng]) and objects', () => {
+    const mockExtended = [
+      'Token',
+      [
+        'Sagrada Familia',
+        [null, null, 41.4036, 2.1744],
+        'ChIJqdcp1d-ipBIRTg16g3K6',
+      ],
+      [
+        'Louvre Museum',
+        { lat: 48.8606, lng: 2.3376 },
+        'ChIJD39Dysdv5kcR_DYm8AyAPYA',
+      ],
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces(mockExtended);
+    expect(extracted.length).toBe(2);
+    expect(extracted[0].title).toBe('Sagrada Familia');
+    expect(extracted[0].latitude).toBeCloseTo(41.4036, 4);
+    expect(extracted[0].longitude).toBeCloseTo(2.1744, 4);
+
+    expect(extracted[1].title).toBe('Louvre Museum');
+    expect(extracted[1].latitude).toBeCloseTo(48.8606, 4);
+    expect(extracted[1].longitude).toBeCloseTo(2.3376, 4);
+  });
+
   it('fails gracefully on empty or malformed strings without throwing', () => {
     expect(BatchexecuteUnpacker.unpack('')).toEqual([]);
     expect(BatchexecuteUnpacker.unpack(')]}\'\nrandom non-json garbage')).toEqual([]);
