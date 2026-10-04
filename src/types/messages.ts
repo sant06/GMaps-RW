@@ -173,6 +173,7 @@ export type ContentToWorkerMessage =
   | { type: 'EXTRACTION_ERROR'; payload: PipelineErrorMessage }
   | { type: 'MUTATION_PROGRESS'; payload: MutationProgressStats }
   | { type: 'MUTATION_ITEM_RESULT'; payload: { item: MutationItemPayload; result: MutationResult } }
+  | { type: 'MUTATION_FALLBACK_PROMPT_REQUIRED'; payload: { item: MutationItemPayload; rpcError: string } }
   | { type: 'MUTATION_COMPLETED'; payload: { summary: MutationProgressStats } }
   | { type: 'MUTATION_ERROR'; payload: PipelineErrorMessage };
 
@@ -183,6 +184,7 @@ export type WorkerToContentMessage =
   | { type: 'CMD_RESUME_EXTRACTION' }
   | { type: 'CMD_ABORT_EXTRACTION' }
   | { type: 'CMD_START_MUTATION'; payload: { items: MutationItemPayload[]; options: MutationOptions } }
+  | { type: 'CMD_APPROVE_DOM_FALLBACK'; payload: { approved: boolean } }
   | { type: 'CMD_PAUSE_MUTATION' }
   | { type: 'CMD_RESUME_MUTATION' }
   | { type: 'CMD_ABORT_MUTATION' }
@@ -200,6 +202,7 @@ export type SidePanelToWorkerMessage =
   | { type: 'REQUEST_RESUME_EXTRACTION' }
   | { type: 'REQUEST_ABORT_EXTRACTION' }
   | { type: 'REQUEST_START_MUTATION'; payload: { items: MutationItemPayload[]; options: MutationOptions } }
+  | { type: 'RESPOND_FALLBACK_APPROVAL'; payload: { approved: boolean } }
   | { type: 'REQUEST_PAUSE_MUTATION' }
   | { type: 'REQUEST_RESUME_MUTATION' }
   | { type: 'REQUEST_ABORT_MUTATION' }
@@ -213,6 +216,7 @@ export type WorkerToSidePanelMessage =
   | { type: 'LIVE_MUTATION_PROGRESS'; payload: MutationProgressStats }
   | { type: 'ITEMS_HARVESTED_UPDATE'; payload: { newlyAdded: ScrapedPlaceRecord[]; totalCount: number } }
   | { type: 'MUTATION_ITEM_UPDATE'; payload: { item: MutationItemPayload; result: MutationResult } }
+  | { type: 'MUTATION_FALLBACK_REQUESTED'; payload: { item: MutationItemPayload; reason: string } }
   | { type: 'OPERATION_FINISHED'; payload: { operation: 'extraction' | 'mutation'; success: boolean; message: string } }
   | { type: 'LOG_ENTRY'; payload: LogEntryMessage }
   | { type: 'KNOWN_LISTS_UPDATE'; payload: GoogleMapsListSummary[] };
