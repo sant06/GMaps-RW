@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Maps Spatial Sync & Export</title>
+  <link rel="stylesheet" href="src/sidepanel/style.css">
+</head>
+<body>
+  <div id="app" class="app-container">
+    <header class="app-header">
+      <div class="header-branding">
+        <div class="logo-badge">🗺️</div>
+        <div>
+          <h1 class="header-title">Spatial Sync Engine</h1>
+          <p class="header-subtitle">Google Maps Bi-Directional Bridge</p>
+        </div>
+      </div>
+      <div id="connection-indicator" class="status-indicator status-disconnected">
+        <span class="status-dot"></span>
+        <span id="connection-status-text">Disconnected</span>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <!-- Session & Tab Info -->
+      <section class="card session-card">
+        <div class="card-header">
+          <h2>Active Session</h2>
+          <span id="tab-url-badge" class="badge">Checking tab...</span>
+        </div>
+        <div class="session-details">
+          <div class="detail-row">
+            <span class="label">CSRF (WIZ) Token:</span>
+            <span id="auth-status-value" class="value text-warning">Unintercepted</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Target List:</span>
+            <span id="active-list-value" class="value">None selected</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Operation Tabs -->
+      <div class="tabs-container">
+        <button id="tab-btn-extract" class="tab-btn active">Extract & Export</button>
+        <button id="tab-btn-mutate" class="tab-btn">Import & Mutate</button>
+        <button id="tab-btn-settings" class="tab-btn">Settings</button>
+      </div>
+
+      <!-- Extract Panel -->
+      <section id="panel-extract" class="tab-panel active">
+        <div class="controls-grid">
+          <div class="form-group">
+            <label for="extraction-mode-select">Extraction Strategy</label>
+            <select id="extraction-mode-select" class="form-select">
+              <option value="hybrid" selected>Hybrid (RPC Intercept + DOM Fallback)</option>
+              <option value="rpc_only">RPC Intercept Only (Fastest)</option>
+              <option value="dom_only">Virtual DOM Scraper (Resilient)</option>
+            </select>
+          </div>
+          <div class="action-buttons">
+            <button id="btn-start-extract" class="btn btn-primary">Start Extraction</button>
+            <button id="btn-pause-extract" class="btn btn-secondary" disabled>Pause</button>
+            <button id="btn-abort-extract" class="btn btn-danger" disabled>Abort</button>
+          </div>
+        </div>
+
+        <!-- Metrics Display -->
+        <div class="metrics-card">
+          <div class="metric">
+            <span class="metric-value" id="metric-harvested">0</span>
+            <span class="metric-label">Harvested Places</span>
+          </div>
+          <div class="metric">
+            <span class="metric-value" id="metric-velocity">0/s</span>
+            <span class="metric-label">Rate</span>
+          </div>
+          <div class="metric">
+            <span class="metric-value" id="metric-eta">--:--</span>
+            <span class="metric-label">Estimated ETA</span>
+          </div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div class="progress-bar-container">
+          <div id="extraction-progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+
+        <!-- Export Buttons -->
+        <div class="export-actions">
+          <h3>Export Harvested Data</h3>
+          <div class="button-group">
+            <button id="btn-export-geojson" class="btn btn-outline" disabled>GeoJSON (RFC 7946)</button>
+            <button id="btn-export-kml" class="btn btn-outline" disabled>KML 2.2</button>
+            <button id="btn-export-csv" class="btn btn-outline" disabled>CSV (RFC 4180)</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Mutate / Import Panel -->
+      <section id="panel-mutate" class="tab-panel">
+        <div class="form-group">
+          <label>Import Data Source (GeoJSON or CSV)</label>
+          <input type="file" id="file-import-input" accept=".geojson,.json,.csv" class="form-file">
+        </div>
+
+        <div class="form-group">
+          <label for="mutation-mode-select">Mutation Strategy</label>
+          <select id="mutation-mode-select" class="form-select">
+            <option value="rpc_first_with_dom_fallback" selected>RPC First + DOM Click Fallback</option>
+            <option value="rpc_only">Direct RPC Only</option>
+            <option value="dom_only">UI Programmatic Click Automation Only</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="target-list-input">Target List Name or ID</label>
+          <input type="text" id="target-list-input" placeholder="e.g. My Favorite Spots" class="form-input">
+        </div>
+
+        <div class="action-buttons">
+          <button id="btn-start-mutation" class="btn btn-primary" disabled>Execute Import Mutation</button>
+          <button id="btn-pause-mutation" class="btn btn-secondary" disabled>Pause</button>
+          <button id="btn-abort-mutation" class="btn btn-danger" disabled>Cancel</button>
+        </div>
+
+        <div class="mutation-metrics metrics-card">
+          <div class="metric">
+            <span class="metric-value" id="metric-mut-success">0</span>
+            <span class="metric-label">Saved</span>
+          </div>
+          <div class="metric">
+            <span class="metric-value" id="metric-mut-pending">0</span>
+            <span class="metric-label">Pending</span>
+          </div>
+          <div class="metric">
+            <span class="metric-value" id="metric-mut-failed">0</span>
+            <span class="metric-label">Failed</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings Panel -->
+      <section id="panel-settings" class="tab-panel">
+        <div class="form-group">
+          <label for="setting-min-delay">Min Pacing Jitter Delay (ms)</label>
+          <input type="number" id="setting-min-delay" value="1200" min="500" max="10000" class="form-input">
+        </div>
+        <div class="form-group">
+          <label for="setting-max-delay">Max Pacing Jitter Delay (ms)</label>
+          <input type="number" id="setting-max-delay" value="2500" min="1000" max="20000" class="form-input">
+        </div>
+        <div class="form-group">
+          <label for="setting-cooling-interval">Cooling Pause (every N items)</label>
+          <input type="number" id="setting-cooling-interval" value="40" min="10" max="100" class="form-input">
+        </div>
+        <button id="btn-save-settings" class="btn btn-primary">Save Settings</button>
+      </section>
+
+      <!-- Live Terminal / Audit Log -->
+      <section class="card log-card">
+        <div class="card-header">
+          <h3>Activity & Diagnostic Audit Log</h3>
+          <button id="btn-clear-logs" class="btn-text">Clear</button>
+        </div>
+        <div id="log-terminal" class="log-terminal">
+          <div class="log-line log-info">[Init] Extension loaded. Waiting for Google Maps tab...</div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="dist/sidepanel.bundle.js"></script>
+</body>
+</html>

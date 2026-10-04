@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "Google Maps Spatial Sync & Export Engine",
+  "version": "1.0.0",
+  "description": "Bidirectional synchronization (Read/Write), high-precision extraction, and local spatial export (GeoJSON, KML, CSV) for Google Maps.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "*://www.google.com/maps/*"
+  ],
+  "background": {
+    "service_worker": "dist/background.bundle.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Open Maps Sync Engine",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.google.com/maps/*"
+      ],
+      "js": [
+        "dist/content.bundle.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "dist/injected_interceptor.bundle.js"
+      ],
+      "matches": [
+        "*://www.google.com/maps/*"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'none';"
+  }
+}
