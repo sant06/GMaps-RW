@@ -308,7 +308,35 @@ El desborde de falsos positivos se debió a la confluencia de tres vulnerabilida
 >    - Nunca uses comodines genéricos de dominio como `a[href*="google.com/maps"]` o `a[href*="/maps/@"]`. Limita los selectores a enlaces explícitos de entidad: `a[href*="/maps/place/"]`, `a[data-href*="/maps/place/"]` y la clase canónica `a.hfpxzc`.
 >    - Las coordenadas de cámara `@lat,lng` sólo son válidas para un lugar si la ruta URL contiene explícitamente `/place/` o un identificador de lugar; si es una URL genérica de mapa, representa únicamente la posición de la cámara del viewport.
 >    - Implementa una función de validación de títulos (`isLegitimatePlaceTitle`) que descarte elementos del sistema (`Cuenta de Google:`), nombres de días, rangos de precios, etiquetas de concurrencia y prefijos técnicos (`photos:`, `bizbuilder:`, `psm`).
-> 5. **Validación Defensiva Multicapa:** Valida los datos en la compuerta de captura (unpacker de red), en el extractor del DOM (scroller), y nuevamente en el guardado del estado central (`StateManager.appendHarvestedPlaces`), garantizando que la memoria y las exportaciones finales permanezcan 100% limpias.
+---
+
+## 14. Heurísticas de Detección Falsa de Contenedores y Distinción entre Vista de Mapa Canvas (WebGL) vs. Vista de Lista (DOM)
+
+### Síntoma / Error
+Al presionar "Start Extraction", el log de la extensión reportaba:
+```text
+[DOM] Contenedor de lista localizado: <div.UL7Qtf> (ScrollHeight: 1003px).
+[SCROLL] Ciclo #1: Scroll +504px (Posición: 0px). Lugares: 0.
+...
+[COMPLETE] Ciclo #6: Final de la lista alcanzado tras 6 ciclos. Extracción finalizada con éxito.
+[SUCCESS] Extracción completada. 0 lugares listos para exportar a Excel, GeoJSON, KML o CSV.
+```
+La extensión informaba falsamente que había localizado un contenedor de lista y que la extracción había finalizado con éxito, pero la exportación contenía 0 lugares y la posición de scroll se mantuvo congelada en `0px`.
+La inspección visual reveló que el usuario se encontraba en la **vista del mapa satelital general** (viendo los pines amarillos dispersos por el continente), sin tener abierto ningún panel o lista en el margen izquierdo.
+
+### Causa Raíz
+1. **Falso positivo por coincidencia de dimensiones brutas:** La rutina de búsqueda fallback `findPrimaryContainer` buscaba cualquier elemento `<div>` en el 60% izquierdo de la pantalla cuyo `scrollHeight` superase a su `clientHeight` en 80px. El elemento `<div.UL7Qtf>` (un contenedor estructural interno de Google Maps para el lienzo del mapa) cumplía esas dimensiones numéricas, pero era un contenedor estático no desplazable que no contenía tarjetas ni enlaces de lugares.
+2. **Diferencia arquitectónica fundamental (WebGL Canvas vs. DOM Tree):**
+   - En la vista de mapa general de Google Maps, los pines guardados (estrellas, marcadores, corazones) se dibujan como sprites de textura acelerados por hardware en un lienzo `<canvas>` (WebGL). **No existen nodos HTML (`<a>`, `<div>`, `article`) para los pines en el DOM** hasta que el usuario hace clic o hover sobre un pin individual en el canvas.
+   - En cambio, los lugares residen en el DOM estructurado únicamente cuando se abre el panel de la lista correspondiente: **Menú ☰ ➔ Guardados 🔖 ➔ Favoritos / Sitios destacados**. Al abrir la lista, Google Maps monta un feed virtual (`div[role="feed"]`) con tarjetas DOM reales que contienen los enlaces `a.hfpxzc` y los nombres de los comercios.
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Validación Semántica Obligatoria de Contenedores y Feedback Preventivo**:
+> 1. **Nunca selecciones un contenedor solo por sus dimensiones:** Un elemento del DOM jamás debe catalogarse como lista o feed virtual basándose exclusivamente en `scrollHeight > clientHeight`. Debe verificarse obligatoriamente la presencia de nodos de entidad en su interior (`el.querySelector('a[href*="/place/"], a.hfpxzc, div[role="article"]') !== null`) o la presencia del atributo semántico `role="feed"`. Si no contiene elementos de entidad, `findPrimaryContainer()` debe devolver `null`.
+> 2. **Prohibición de "Falsos Éxitos":** Si la extracción termina con 0 lugares, el sistema nunca debe emitir un mensaje de `SUCCESS` ni afirmar que se completó con éxito. Debe disparar una advertencia clara (`EMPTY`) notificándole al usuario que debe abrir su lista de lugares guardados para que los pines existan en el DOM.
+> 3. **Guía de Navegación Clara al Usuario:** En aplicaciones complejas con renderizado híbrido (WebGL + DOM), la extensión debe educar al usuario: explicarle claramente que los pines visibles en el mapa gráfico pertenecen a una lista guardada y que debe abrir el panel de esa lista (Guardados 🔖) para que el motor pueda extraer los datos.
+
 
 
 

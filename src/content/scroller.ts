@@ -35,8 +35,10 @@ export class MapsVirtualScroller {
    * Locates Google Maps virtualized container using multi-level heuristic detection.
    */
   public findPrimaryContainer(): HTMLElement | null {
-    // 1. If any place links exist in the DOM, find their scrollable ancestor
-    const sampleLink = document.querySelector<HTMLElement>('a[href*="/maps/place/"], a[href*="/place/"]');
+    // 1. Primary: If place links or place cards exist, find their scrollable ancestor
+    const sampleLink = document.querySelector<HTMLElement>(
+      'a[href*="/maps/place/"], a[href*="/place/"], a.hfpxzc, div[role="article"], div.Nv2PK'
+    );
     if (sampleLink) {
       let parent = sampleLink.parentElement;
       while (parent && parent !== document.body && parent !== document.documentElement) {
@@ -48,7 +50,7 @@ export class MapsVirtualScroller {
       }
     }
 
-    // 2. Try known Google Maps container selectors
+    // 2. Try known Google Maps container selectors ONLY if they have role="feed" or contain place items
     const candidates = [
       'div[role="feed"]',
       'div.m6QErb[aria-label]',
@@ -65,19 +67,26 @@ export class MapsVirtualScroller {
     for (const selector of candidates) {
       const elements = document.querySelectorAll<HTMLElement>(selector);
       for (const el of elements) {
-        if (el.scrollHeight > el.clientHeight && el.clientHeight > 150) {
+        const isFeed = el.getAttribute('role') === 'feed';
+        const hasPlaces = el.querySelector('a[href*="/place/"], a.hfpxzc, div[role="article"], div.Nv2PK') !== null;
+        if ((isFeed || hasPlaces) && el.scrollHeight > el.clientHeight && el.clientHeight > 150) {
           return el;
         }
       }
     }
 
-    // 3. Fallback: Search all scrollable elements in the left panel / side drawer
-    const allDivs = document.querySelectorAll<HTMLElement>('div');
-    for (const div of allDivs) {
-      if (div.clientHeight > 200 && div.scrollHeight > div.clientHeight + 80) {
-        const rect = div.getBoundingClientRect();
-        if (rect.left < window.innerWidth * 0.6 && rect.width > 200) {
-          return div;
+    // 3. Fallback: Search left panel scrollable elements ONLY if they contain place links
+    if (sampleLink) {
+      const allDivs = document.querySelectorAll<HTMLElement>('div');
+      for (const div of allDivs) {
+        if (div.clientHeight > 200 && div.scrollHeight > div.clientHeight + 80) {
+          const rect = div.getBoundingClientRect();
+          if (rect.left < window.innerWidth * 0.6 && rect.width > 200) {
+            const hasPlaces = div.querySelector('a[href*="/place/"], a.hfpxzc, div[role="article"]') !== null;
+            if (hasPlaces) {
+              return div;
+            }
+          }
         }
       }
     }
@@ -109,10 +118,21 @@ export class MapsVirtualScroller {
   private performActiveScroll(deltaPixels: number): void {
     if (!this.container) return;
 
+    const initialScrollTop = this.container.scrollTop;
+
     // 1. Direct scrollTop advancement (instantaneous, no smooth scroll animation latency)
     this.container.scrollTop += deltaPixels;
 
-    // 2. Dispatch synthetic scroll and wheel events on the container
+    // 2. If container scrollTop did not advance, attempt on inner scrollable child
+    if (this.container.scrollTop === initialScrollTop) {
+      const childScroll = this.container.querySelector<HTMLElement>('div.m6QErb, div[tabindex="-1"], div[role="feed"]');
+      if (childScroll && childScroll.scrollHeight > childScroll.clientHeight) {
+        childScroll.scrollTop += deltaPixels;
+        childScroll.dispatchEvent(new Event('scroll', { bubbles: true }));
+      }
+    }
+
+    // 3. Dispatch synthetic scroll and wheel events on the container
     this.container.dispatchEvent(new Event('scroll', { bubbles: true }));
     this.container.dispatchEvent(
       new WheelEvent('wheel', {
@@ -236,6 +256,17 @@ export class MapsVirtualScroller {
 
       // Fast, responsive delay (300ms - 550ms)
       await this.rateLimiter.applyAdaptiveDelay();
+    }
+
+    if (this.harvestedMap.size === 0) {
+      logCallback?.(
+        'warn',
+        'EMPTY',
+        'Extracción finalizada sin lugares. Por favor abre tu lista (ej. Guardados -> Favoritos / Sitios destacados) en Google Maps para que la lista sea visible y vuelve a intentar.'
+      );
+      throw new Error(
+        'No se detectaron lugares en la vista actual. Por favor abre tu lista de lugares guardados en Google Maps (ej. Menú ☰ -> Guardados 🔖 -> selecciona tu lista).'
+      );
     }
 
     logCallback?.('info', 'SUCCESS', `Extracción completada. ${this.harvestedMap.size} lugares listos para exportar a Excel, GeoJSON, KML o CSV.`);
