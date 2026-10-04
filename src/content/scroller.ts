@@ -272,13 +272,22 @@ export class MapsVirtualScroller {
    */
   private detectTerminalSentinel(): boolean {
     if (!this.container) return false;
-    const text = this.container.innerText || '';
-    return (
-      text.includes("You've reached the end of the list") ||
-      text.includes('No more results') ||
-      text.includes('End of results') ||
-      text.includes('Fin de los resultados') ||
-      text.includes('Has llegado al final')
-    );
+    const text = (this.container.innerText || '').toLowerCase();
+    const sentinels = [
+      "you've reached the end",
+      'no more results',
+      'end of results',
+      'has llegado al final',
+      'fin de los resultados',
+      'no hay más resultados',
+      'vous avez atteint la fin',
+      'plus aucun résultat',
+      'sie haben das ende erreicht',
+      'keine weiteren ergebnisse',
+      'você chegou ao fim',
+      'não há mais resultados',
+      'hai raggiunto la fine',
+    ];
+    return sentinels.some((s) => text.includes(s));
   }
 }

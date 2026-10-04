@@ -15,7 +15,20 @@
     "activeTab"
   ],
   "host_permissions": [
-    "https://www.google.com/*"
+    "https://www.google.com/*",
+    "https://www.google.es/*",
+    "https://www.google.com.ar/*",
+    "https://www.google.com.mx/*",
+    "https://www.google.com.br/*",
+    "https://www.google.co.uk/*",
+    "https://www.google.fr/*",
+    "https://www.google.de/*",
+    "https://www.google.it/*",
+    "https://www.google.ca/*",
+    "https://www.google.cl/*",
+    "https://www.google.com.co/*",
+    "https://www.google.com.pe/*",
+    "https://www.google.com.uy/*"
   ],
   "background": {
     "service_worker": "dist/background.bundle.js",
@@ -34,7 +47,20 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.google.com/maps*"
+        "https://www.google.com/maps*",
+        "https://www.google.es/maps*",
+        "https://www.google.com.ar/maps*",
+        "https://www.google.com.mx/maps*",
+        "https://www.google.com.br/maps*",
+        "https://www.google.co.uk/maps*",
+        "https://www.google.fr/maps*",
+        "https://www.google.de/maps*",
+        "https://www.google.it/maps*",
+        "https://www.google.ca/maps*",
+        "https://www.google.cl/maps*",
+        "https://www.google.com.co/maps*",
+        "https://www.google.com.pe/maps*",
+        "https://www.google.com.uy/maps*"
       ],
       "js": [
         "dist/content.bundle.js"
@@ -48,7 +74,20 @@
         "dist/injected_interceptor.bundle.js"
       ],
       "matches": [
-        "https://www.google.com/*"
+        "https://www.google.com/*",
+        "https://www.google.es/*",
+        "https://www.google.com.ar/*",
+        "https://www.google.com.mx/*",
+        "https://www.google.com.br/*",
+        "https://www.google.co.uk/*",
+        "https://www.google.fr/*",
+        "https://www.google.de/*",
+        "https://www.google.it/*",
+        "https://www.google.ca/*",
+        "https://www.google.cl/*",
+        "https://www.google.com.co/*",
+        "https://www.google.com.pe/*",
+        "https://www.google.com.uy/*"
       ]
     }
   ],

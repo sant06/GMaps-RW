@@ -2,6 +2,7 @@
  * UI Automation Fallback for Google Maps.
  * Executes programmatic workflows via synthetic browser events
  * when Batchexecute RPC signatures are rejected or session tokens are invalid.
+ * Hardened with multi-language (i18n) and structural DOM selectors.
  */
 
 import type { MutationItemPayload, MutationResult } from '../types/places';
@@ -40,10 +41,11 @@ export class GoogleMapsUiMutator {
         throw new Error(`Target list option "${item.targetListName || item.targetListId}" not found in Save menu.`);
       }
 
-      // 4. Check if already selected, click to toggle if not
+      // 4. Check if already selected, click to toggle only if NOT checked
       const isChecked =
         listOption.getAttribute('aria-checked') === 'true' ||
-        listOption.querySelector('input[type="checkbox"]:checked') !== null;
+        listOption.querySelector('input[type="checkbox"]:checked') !== null ||
+        listOption.classList.contains('checked');
 
       if (!isChecked) {
         this.dispatchSyntheticClick(listOption);
@@ -82,28 +84,47 @@ export class GoogleMapsUiMutator {
   }
 
   /**
-   * Searches for the primary Save / Guardar button using multi-lingual and aria selectors.
+   * Searches for the primary Save / Guardar button using multi-lingual and structural selectors.
    */
   private async locateSaveButton(timeoutMs = 4000): Promise<HTMLElement | null> {
-    const selectors = [
+    const structuralSelectors = [
       'button[data-value="Save"]',
       'button[data-value="Guardar"]',
       'button[data-item-id="save"]',
+      'button[data-item-id="action:save"]',
+      'button[jsaction*="action:save" i]',
+      'button[jsaction*="place.save" i]',
       'button[aria-label*="Save" i]',
       'button[aria-label*="Guardar" i]',
       'button[aria-label*="Sauvegarder" i]',
+      'button[aria-label*="Speichern" i]',
       'button[aria-label*="Salva" i]',
+      'button[aria-label*="Salvar" i]',
+      'button[aria-label*="保存" i]', // Japanese/Chinese
       'div[role="main"] button:has([data-value="Save"])',
+      'div[role="main"] button:has([data-value="Guardar"])',
     ];
 
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      for (const sel of selectors) {
+      for (const sel of structuralSelectors) {
         const btn = document.querySelector<HTMLElement>(sel);
         if (btn && this.isElementVisible(btn)) {
           return btn;
         }
       }
+
+      // Fallback: search for bookmark SVG icon inside action buttons
+      const actionButtons = document.querySelectorAll<HTMLElement>('div[role="main"] button');
+      for (const btn of actionButtons) {
+        const svgPath = btn.querySelector('svg path');
+        const d = svgPath?.getAttribute('d') || '';
+        // Standard Google Maps bookmark SVG path prefix
+        if (d.includes('M17 3H7') || d.includes('M19 21l-7-5-7 5V5')) {
+          if (this.isElementVisible(btn)) return btn;
+        }
+      }
+
       await this.rateLimiter.sleep(200);
     }
 
@@ -111,22 +132,27 @@ export class GoogleMapsUiMutator {
   }
 
   /**
-   * Searches for the target list checkbox in the opened list selection popup.
+   * Searches for the target list checkbox in the opened list selection popup,
+   * supporting international synonyms for standard lists (Favorites, Want to go, Starred).
    */
   private async locateListOption(listName: string, timeoutMs = 3000): Promise<HTMLElement | null> {
     const start = Date.now();
-    const cleanTarget = listName.toLowerCase().trim();
+    const synonyms = this.getListSynonyms(listName);
 
     while (Date.now() - start < timeoutMs) {
       const candidates = document.querySelectorAll<HTMLElement>(
-        'div[role="menuitemcheckbox"], button[role="menuitemcheckbox"], div[role="dialog"] div[data-item-id], div[role="dialog"] li'
+        'div[role="menuitemcheckbox"], button[role="menuitemcheckbox"], div[role="dialog"] div[data-item-id], div[role="dialog"] li, div[role="dialog"] div[jsaction]'
       );
 
       for (const candidate of candidates) {
         const text = candidate.textContent?.toLowerCase() || '';
         const label = candidate.getAttribute('aria-label')?.toLowerCase() || '';
 
-        if (text.includes(cleanTarget) || label.includes(cleanTarget)) {
+        const matches = synonyms.some(
+          (syn) => text.includes(syn) || label.includes(syn)
+        );
+
+        if (matches) {
           return candidate;
         }
       }
@@ -138,14 +164,37 @@ export class GoogleMapsUiMutator {
   }
 
   /**
+   * Expands list names into multi-lingual synonyms.
+   */
+  private getListSynonyms(rawName: string): string[] {
+    const lower = rawName.toLowerCase().trim();
+    const set = new Set<string>([lower]);
+
+    // Favorites synonyms
+    if (['favorites', 'favoritos', 'favoris', 'favoriten', 'preferiti'].some((k) => lower.includes(k))) {
+      ['favorites', 'favoritos', 'favoris', 'favoriten', 'preferiti', 'favoritos'].forEach((s) => set.add(s));
+    }
+    // Want to go synonyms
+    if (['want to go', 'quiero ir', 'por visitar', 'à visiter', 'möchte dorthin', 'quero ir'].some((k) => lower.includes(k))) {
+      ['want to go', 'quiero ir', 'por visitar', 'à visiter', 'möchte dorthin', 'quero ir'].forEach((s) => set.add(s));
+    }
+    // Starred places synonyms
+    if (['starred', 'destacados', 'estrellas', 'mit stern'].some((k) => lower.includes(k))) {
+      ['starred', 'destacados', 'sitios destacados', 'lugares destacados', 'lieux avec suivi', 'mit stern'].forEach((s) => set.add(s));
+    }
+
+    return Array.from(set);
+  }
+
+  /**
    * Injects a note into the place card note input if mounted.
    */
   private async injectUserNote(noteText: string): Promise<void> {
     const noteInput = document.querySelector<HTMLTextAreaElement | HTMLInputElement>(
-      'textarea[aria-label*="note" i], input[aria-label*="note" i], textarea[aria-label*="nota" i], input[aria-label*="nota" i]'
+      'textarea[aria-label*="note" i], input[aria-label*="note" i], textarea[aria-label*="nota" i], input[aria-label*="nota" i], textarea'
     );
 
-    if (noteInput) {
+    if (noteInput && this.isElementVisible(noteInput)) {
       noteInput.focus();
       noteInput.value = noteText;
       noteInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -155,23 +204,18 @@ export class GoogleMapsUiMutator {
   }
 
   private closeOpenMenu(): void {
-    // Attempt to press Escape
     document.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })
     );
 
-    // Or click close button
     const closeBtn = document.querySelector<HTMLElement>(
-      'div[role="dialog"] button[aria-label*="Close" i], div[role="dialog"] button[aria-label*="Cerrar" i]'
+      'div[role="dialog"] button[aria-label*="Close" i], div[role="dialog"] button[aria-label*="Cerrar" i], div[role="dialog"] button[aria-label*="Fermer" i]'
     );
     if (closeBtn) {
       this.dispatchSyntheticClick(closeBtn);
     }
   }
 
-  /**
-   * Dispatches realistic synthetic MouseEvent sequence to trigger host jsaction handlers.
-   */
   private dispatchSyntheticClick(element: HTMLElement): void {
     const opts = { bubbles: true, cancelable: true, view: window };
     element.dispatchEvent(new MouseEvent('pointerdown', opts));
