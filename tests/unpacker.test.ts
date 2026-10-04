@@ -63,6 +63,20 @@ describe('BatchexecuteUnpacker', () => {
     expect(extracted[1].longitude).toBeCloseTo(2.3376, 4);
   });
 
+  it('rejects protobuf metadata, enum pairs, and noise arrays that lack valid Place IDs', () => {
+    const phantomPayload = [
+      ['psm', [6, 7]],
+      ['America/Montevideo', [81, 84]],
+      ['lunes', [1.4, 5]],
+      ['photos:AHX...extra', [0.0002026, 1e-6]],
+      ['$ 1.282.963', [10.5, 20.3]], // No place ID
+      ['Cuenta de Google: Santiago Montoya', [-34.6037, -58.3816], 'ChIJAccount1234567890'], // Rejected by title
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces(phantomPayload);
+    expect(extracted.length).toBe(0);
+  });
+
   it('fails gracefully on empty or malformed strings without throwing', () => {
     expect(BatchexecuteUnpacker.unpack('')).toEqual([]);
     expect(BatchexecuteUnpacker.unpack(')]}\'\nrandom non-json garbage')).toEqual([]);

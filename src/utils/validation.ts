@@ -1,0 +1,138 @@
+/**
+ * Validation heuristics for Google Maps place entities and coordinates.
+ * Filters out internal Google protobuf tags, telemetry, aspect ratios,
+ * busyness labels, hours, and non-place DOM artifacts.
+ */
+
+import { isValidCoordinate } from './coordinates';
+
+/**
+ * Validates that latitude and longitude represent a realistic geographic location on Earth,
+ * rejecting protobuf enums (pure integers like [6, 7], [1, 2], [81, 84]), null-island offsets, and zeroes.
+ */
+export function isPlausibleGeoCoordinate(latitude: number, longitude: number): boolean {
+  if (!isValidCoordinate(latitude, longitude)) return false;
+
+  // 1. Reject pure integer pairs (Google Maps Protobuf enum/ratio pairs like [6, 7], [1, 2], [81, 84], [32, 84], [74, 84])
+  if (Number.isInteger(latitude) && Number.isInteger(longitude)) {
+    return false;
+  }
+
+  // 2. Reject Near-Zero / Null Island offsets (e.g. 0.0001166, 0.0000186)
+  if (Math.abs(latitude) < 0.1 && Math.abs(longitude) < 0.1) {
+    return false;
+  }
+
+  // 3. Reject if either coordinate is exactly zero while the other is small
+  if ((latitude === 0 && Math.abs(longitude) < 1) || (longitude === 0 && Math.abs(latitude) < 1)) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Validates that a string represents a genuine human-readable place title or business name,
+ * filtering out internal protobuf identifiers, user account avatars, timestamps, prices, and status enums.
+ */
+export function isLegitimatePlaceTitle(title: string | undefined | null): boolean {
+  if (!title || typeof title !== 'string') return false;
+  const t = title.trim();
+
+  // Length boundaries
+  if (t.length < 2 || t.length > 150) return false;
+
+  // Must contain at least one letter (not purely numbers or punctuation)
+  if (!/[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ]/.test(t)) return false;
+
+  // Reject user account avatar links / sign-out elements
+  if (t.toLowerCase().includes('cuenta de google') || t.toLowerCase().includes('google account')) {
+    return false;
+  }
+
+  // Reject internal Google asset, telemetry, and logging tags
+  const forbiddenPrefixes = [
+    'photos:',
+    'bizbuilder:',
+    'casanova:',
+    'SearchResult.',
+    '2ahUKE',
+  ];
+  if (forbiddenPrefixes.some((p) => t.startsWith(p) || t.toLowerCase().startsWith(p.toLowerCase()))) {
+    return false;
+  }
+
+  // Exact matches on internal protobuf tokens
+  const exactForbidden = ['psm', 'gps', 'gsm', 'tipo 2', 'tomacorriente'];
+  if (exactForbidden.includes(t.toLowerCase())) return false;
+
+  // Reject ISO dates (e.g., 2027-01-02)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return false;
+
+  // Reject prices (e.g., $ 1.282.963, 150€)
+  if (/^[\$€£¥]\s*\d/.test(t) || /^\d+[\.,]\d{2}\s*[\$€£¥]/.test(t)) return false;
+
+  // Reject days of the week
+  const days = [
+    'lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado', 'domingo',
+    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  ];
+  if (days.includes(t.toLowerCase())) return false;
+
+  // Reject busyness and operational status phrases
+  const statusPhrases = [
+    'un poco concurrido',
+    'poco concurrido',
+    'más concurrido de lo habitual',
+    'mas concurrido de lo habitual',
+    'menos concurrido de lo habitual',
+    'máxima concurrencia',
+    'maxima concurrencia',
+    'habitualmente concurrido',
+    'cerrado permanentemente',
+    'cerrado temporalmente',
+    'cerrado',
+    'permanently closed',
+    'temporarily closed',
+    'closed',
+    'abierto las 24 horas',
+    'open 24 hours',
+    'busy',
+    'not busy',
+    'desayuno-almuerzo',
+  ];
+  if (statusPhrases.includes(t.toLowerCase())) return false;
+
+  // Reject timezones (e.g. America/Montevideo, Europe/London, Asia/Tokyo)
+  if (/^(America|Europe|Asia|Africa|Pacific|Atlantic|Indian|Antarctica)\/[A-Za-z_]+/.test(t)) {
+    return false;
+  }
+
+  // Reject time strings (e.g. 12:00, 14:30 PM, 9:00 AM)
+  if (/^\d{1,2}:\d{2}(\s*(AM|PM|am|pm))?$/.test(t)) return false;
+
+  // Reject ratings (e.g. 4.5, 4,5 estrellas, 4.8 stars)
+  if (/^\d([.,]\d)?\s*(estrellas|stars)?$/i.test(t)) return false;
+
+  // Reject internal Google 20-26 char base64-like feature tokens without spaces (e.g. d3fCauWaHYnL1sQPjYam8QM)
+  if (/^[a-zA-Z0-9_-]{20,26}$/.test(t) && !t.includes(' ')) {
+    return false;
+  }
+
+  // Reject scientific notation
+  if (/^\d+(\.\d+)?[eE]\+\d+$/.test(t)) return false;
+
+  // Reject URLs or internal paths
+  if (
+    t.startsWith('http://') ||
+    t.startsWith('https://') ||
+    t.startsWith('/m/') ||
+    t.startsWith('/g/') ||
+    t.startsWith('/search') ||
+    t.startsWith('/fake_')
+  ) {
+    return false;
+  }
+
+  return true;
+}

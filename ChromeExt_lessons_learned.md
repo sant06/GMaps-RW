@@ -275,5 +275,41 @@ Cuando se recarga o actualiza una extensión en Chrome:
 >    ```
 >    y **revertir inmediatamente el estado de los botones** de la interfaz a habilitados para evitar que el usuario quede bloqueado.
 
+---
+
+## 13. Heurísticas de Validación Estricta para Cargas Útiles Protobuf/RPC y Filtrado de Contaminación del DOM en SPAs
+
+### Síntoma / Error
+Al mover el ratón o hacer hover en Google Maps durante o después de una extracción, el panel de la extensión comenzó a acumular lugares a un ritmo descontrolado, superando los 1.300 "lugares" en una lista que en realidad sólo tenía unas decenas de pines auténticos.
+Al inspeccionar el archivo Excel exportado, se descubrieron registros espurios con títulos como:
+- `"Cuenta de Google: Santiago Montoya"` (con coordenadas de la cámara global).
+- Días de la semana (`lunes`, `martes`, `domingo`).
+- Etiquetas de metadatos de Protobuf (`psm`, `gps`, `photos:...`, `bizbuilder:...`, `casanova:...`).
+- Enums numéricos interpretados como coordenadas (`[6, 7]`, `[1.4, 5]`, `[81, 84]`, `[32, 84]`).
+- Precios y monedas (`$ 1.282.963`, `150€`).
+- Estados de concurrencia y horarios (`un poco concurrido`, `cerrado permanentemente`, `abierto las 24 horas`).
+- Zonas horarias (`America/Montevideo`).
+
+### Causa Raíz
+El desborde de falsos positivos se debió a la confluencia de tres vulnerabilidades de diseño:
+1. **Falta de compuerta de estado en la intercepción RPC:** El escuchador `bridge.onRpc` procesaba y enviaba datos continuamente al Service Worker mediante `EXTRACTION_STREAM_BATCH`, incluso cuando la extracción estaba inactiva o abortada. Como Google Maps realiza peticiones Batchexecute en segundo plano con cada movimiento del cursor (previews de tarjetas, precarga de baldosas y capas vectoriales), cada hover inyectaba decenas de paquetes de red no deseados al pipeline.
+2. **Desempaquetado Protobuf excesivamente permisivo:** El unpacker (`rpc-unpacker.ts`) recorría recursivamente cualquier array anidado y, si encontraba dos números cualesquiera, los asumía como latitud y longitud (porque valores como `6` y `7` cumplen formalmente `-90 <= lat <= 90`). Si encontraba cualquier string adyacente, lo tomaba como título y generaba un ID sintético aleatorio (`generateSyntheticPlaceId`), asumiendo erróneamente que era un lugar válido. En realidad, Google Maps transporta miles de arrays con identificadores de tipo, escalas de zoom, deltas de renderizado y pares de dimensiones de interfaz.
+3. **Selectores DOM hiper-permisivos y captura de la cámara:** En el recolector del DOM (`scroller.ts`), el selector `a[href*="google.com/maps"]` y `a[href*="/maps/@"]` capturaba el botón de perfil/avatar de la cuenta de Google situado en la cabecera superior derecha (`<a href="https://accounts.google.com/SignOutOptions?...continue=https://www.google.com/maps/@4.2522646,-165.7815511..." aria-label="Cuenta de Google: Santiago Montoya">`), extrayendo las coordenadas del centro de la cámara del mapa (`@lat,lng`) como si fueran un pin del usuario.
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Defensa en Profundidad para Ingeniería Inversa de RPCs y Scrapers de DOM en SPAs Complejas**:
+> 1. **Gating de Estado Activo en Interceptores:** Un interceptor de red inyectado en el contexto de la página principal jamás debe propagar datos procesados hacia el Service Worker a menos que una bandera explícita (`isExtractionActive === true`) certifique que el usuario ordenó la extracción y está en curso. Al abortar o finalizar, la compuerta se cierra de inmediato.
+> 2. **Identificador Canónico Obligatorio en Entidades RPC:** Al recorrer grafos deserializados de Protobuf/JSON en aplicaciones propietarias, **nunca generes entidades sintéticas a partir de coincidencias difusas** (número + string). En Google Maps, toda entidad real de un lugar o pin guardado cuenta indispensablemente con un identificador unívoco: o bien un `Place ID` (`ChIJ...` de más de 20 caracteres) o un `Feature ID Hexadecimal` (`0x...:0x...`). Si un nodo carece de ambos, es metadato interno del motor y debe descartarse (`if (!placeId) return null`).
+> 3. **Heurística de Coordenadas Geográficas Plausibles (`isPlausibleGeoCoordinate`)**:
+>    - Las coordenadas geográficas reales de pines humanos casi nunca son enteros puros; tienen precisión decimal fraccionaria. Descartar pares donde ambos sean enteros (`Number.isInteger(lat) && Number.isInteger(lng)`) elimina de raíz los enums y ratios de renderizado (`[6, 7]`, `[81, 84]`).
+>    - Descartar valores cercanos a Null Island (`Math.abs(lat) < 0.1 && Math.abs(lng) < 0.1`), que corresponden a deltas o márgenes de padding interno.
+> 4. **Restricción Quirúrgica de Enlaces en el DOM y Filtrado Léxico**:
+>    - Nunca uses comodines genéricos de dominio como `a[href*="google.com/maps"]` o `a[href*="/maps/@"]`. Limita los selectores a enlaces explícitos de entidad: `a[href*="/maps/place/"]`, `a[data-href*="/maps/place/"]` y la clase canónica `a.hfpxzc`.
+>    - Las coordenadas de cámara `@lat,lng` sólo son válidas para un lugar si la ruta URL contiene explícitamente `/place/` o un identificador de lugar; si es una URL genérica de mapa, representa únicamente la posición de la cámara del viewport.
+>    - Implementa una función de validación de títulos (`isLegitimatePlaceTitle`) que descarte elementos del sistema (`Cuenta de Google:`), nombres de días, rangos de precios, etiquetas de concurrencia y prefijos técnicos (`photos:`, `bizbuilder:`, `psm`).
+> 5. **Validación Defensiva Multicapa:** Valida los datos en la compuerta de captura (unpacker de red), en el extractor del DOM (scroller), y nuevamente en el guardado del estado central (`StateManager.appendHarvestedPlaces`), garantizando que la memoria y las exportaciones finales permanezcan 100% limpias.
+
+
 
 

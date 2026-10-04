@@ -290,6 +290,12 @@ btnClearLogs?.addEventListener('click', () => {
 btnStartExtract?.addEventListener('click', () => {
   const mode = (selectExtractionMode?.value || 'hybrid') as 'hybrid' | 'rpc_only' | 'dom_only';
   extractionStartTime = Date.now();
+  harvestedPlaces.clear();
+  updateExportButtonsState();
+  if (elMetricHarvested) elMetricHarvested.textContent = '0';
+  if (elMetricVelocity) elMetricVelocity.textContent = '0.0/s';
+  if (elMetricEta) elMetricEta.textContent = '--:--';
+  if (elProgressBar) elProgressBar.style.width = '0%';
 
   backgroundPort?.postMessage({
     type: 'REQUEST_START_EXTRACTION',

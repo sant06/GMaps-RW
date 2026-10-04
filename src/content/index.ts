@@ -39,6 +39,7 @@ let pendingFallbackApprovalResolve: ((approved: boolean) => void) | null = null;
 
 // Track extraction stats
 let extractionStartTime = 0;
+let isExtractionActive = false;
 
 // Inject MAIN world interceptor immediately
 if (document.readyState === 'loading') {
@@ -146,9 +147,9 @@ bridge.onAuth((payload) => {
   }
 });
 
-// Forward intercepted Batchexecute RPC payloads to Service Worker
+// Forward intercepted Batchexecute RPC payloads to Service Worker ONLY during active extraction
 bridge.onRpc((payload) => {
-  if (!pipelinePort) return;
+  if (!pipelinePort || !isExtractionActive) return;
 
   const places = BatchexecuteUnpacker.deepExtractPlaces(payload.parsedPayload || []);
   if (places.length > 0) {
@@ -174,6 +175,7 @@ bridge.onRpc((payload) => {
 // ============================================================================
 async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
   extractionStartTime = Date.now();
+  isExtractionActive = true;
 
   if (options.mode === 'rpc_only') {
     console.log('[Content Script] RPC-only mode active: Listening passively to network streams.');
@@ -241,6 +243,7 @@ async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
       },
     } as ContentToWorkerMessage);
   } finally {
+    isExtractionActive = false;
     activeScroller = null;
   }
 }
@@ -440,6 +443,7 @@ function handleWorkerMessage(msg: WorkerToContentMessage): void {
       break;
 
     case 'CMD_ABORT_EXTRACTION':
+      isExtractionActive = false;
       activeScroller?.abort();
       activeScroller = null;
       break;

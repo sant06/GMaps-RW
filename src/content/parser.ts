@@ -4,7 +4,7 @@
  */
 
 import type { ParsedPlaceCoordinates } from '../types/places';
-import { isValidCoordinate } from '../utils/coordinates';
+import { isPlausibleGeoCoordinate } from '../utils/validation';
 
 export class GoogleMapsUrlParser {
   private static readonly PIN_COORD_STRICT = /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/;
@@ -29,18 +29,31 @@ export class GoogleMapsUrlParser {
       decodedUrl = url;
     }
 
+    // 0. Reject non-place URLs (Google Account avatars, sign-out redirectors, help, legal)
+    if (
+      decodedUrl.includes('accounts.google.') ||
+      decodedUrl.includes('SignOutOptions') ||
+      decodedUrl.includes('support.google.') ||
+      decodedUrl.includes('policies.google.')
+    ) {
+      return null;
+    }
+
+    const placeId = this.extractPlaceId(decodedUrl);
+    const featureId = this.extractFeatureId(decodedUrl);
+
     // 1. Primary Strategy: Pin coordinate extraction from !3d and !4d tokens
     const strictPinMatch = decodedUrl.match(this.PIN_COORD_STRICT);
     if (strictPinMatch) {
       const lat = parseFloat(strictPinMatch[1]);
       const lng = parseFloat(strictPinMatch[2]);
-      if (isValidCoordinate(lat, lng)) {
+      if (isPlausibleGeoCoordinate(lat, lng)) {
         return {
           latitude: lat,
           longitude: lng,
           isHighPrecision: true,
-          placeId: this.extractPlaceId(decodedUrl),
-          featureId: this.extractFeatureId(decodedUrl),
+          placeId,
+          featureId,
         };
       }
     }
@@ -49,29 +62,32 @@ export class GoogleMapsUrlParser {
     if (relaxedPinMatch) {
       const lat = parseFloat(relaxedPinMatch[1]);
       const lng = parseFloat(relaxedPinMatch[2]);
-      if (isValidCoordinate(lat, lng)) {
+      if (isPlausibleGeoCoordinate(lat, lng)) {
         return {
           latitude: lat,
           longitude: lng,
           isHighPrecision: true,
-          placeId: this.extractPlaceId(decodedUrl),
-          featureId: this.extractFeatureId(decodedUrl),
+          placeId,
+          featureId,
         };
       }
     }
 
     // 2. Secondary Strategy: Viewport camera fallback extraction
+    // ONLY accepted if the URL explicitly denotes a place or has a known Place ID/FID,
+    // preventing camera viewpoints (@lat,lng) on map overview links from being misclassified as places.
+    const isPlaceUrl = decodedUrl.includes('/place/') || decodedUrl.includes('/search/') || !!placeId || !!featureId;
     const viewportMatch = decodedUrl.match(this.VIEWPORT_COORD_REGEX);
-    if (viewportMatch) {
+    if (viewportMatch && isPlaceUrl) {
       const lat = parseFloat(viewportMatch[1]);
       const lng = parseFloat(viewportMatch[2]);
-      if (isValidCoordinate(lat, lng)) {
+      if (isPlausibleGeoCoordinate(lat, lng)) {
         return {
           latitude: lat,
           longitude: lng,
           isHighPrecision: false,
-          placeId: this.extractPlaceId(decodedUrl),
-          featureId: this.extractFeatureId(decodedUrl),
+          placeId,
+          featureId,
         };
       }
     }
@@ -81,13 +97,13 @@ export class GoogleMapsUrlParser {
     if (queryMatch) {
       const lat = parseFloat(queryMatch[1]);
       const lng = parseFloat(queryMatch[2]);
-      if (isValidCoordinate(lat, lng)) {
+      if (isPlausibleGeoCoordinate(lat, lng)) {
         return {
           latitude: lat,
           longitude: lng,
           isHighPrecision: true,
-          placeId: this.extractPlaceId(decodedUrl),
-          featureId: this.extractFeatureId(decodedUrl),
+          placeId,
+          featureId,
         };
       }
     }

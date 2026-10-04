@@ -249,6 +249,7 @@ export class PortManager {
             return;
           }
         }
+        await StateManager.clearHarvestedPlaces();
         await StateManager.updatePipelineStatus('extracting');
         this.sendToContent({ type: 'CMD_START_EXTRACTION', payload: msg.payload });
         break;

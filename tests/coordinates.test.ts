@@ -24,14 +24,24 @@ describe('GoogleMapsUrlParser', () => {
     expect(parsed?.longitude).toBeCloseTo(2.2944813, 5);
   });
 
-  it('falls back to viewport camera @lat,lng when pin markers are absent', () => {
-    const url = 'https://www.google.com/maps/@-34.603722,-58.381592,14z';
+  it('falls back to viewport camera @lat,lng when pin markers are absent but /place/ is present', () => {
+    const url = 'https://www.google.com/maps/place/Obelisco/@-34.603722,-58.381592,14z';
     const parsed = GoogleMapsUrlParser.parse(url);
 
     expect(parsed).not.toBeNull();
     expect(parsed?.isHighPrecision).toBe(false);
     expect(parsed?.latitude).toBeCloseTo(-34.603722, 5);
     expect(parsed?.longitude).toBeCloseTo(-58.381592, 5);
+  });
+
+  it('rejects generic camera-only overview links and user account avatar URLs', () => {
+    // Pure viewport without place indicator
+    expect(GoogleMapsUrlParser.parse('https://www.google.com/maps/@-34.603722,-58.381592,14z')).toBeNull();
+
+    // User avatar redirector
+    const avatarUrl =
+      'https://accounts.google.com/SignOutOptions?continue=https://www.google.com/maps/@4.2522646,-165.7815511,3.46z';
+    expect(GoogleMapsUrlParser.parse(avatarUrl)).toBeNull();
   });
 
   it('extracts coordinates from query parameters (?q=lat,lng or ll=lat,lng)', () => {

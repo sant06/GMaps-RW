@@ -9,6 +9,7 @@ import type { ScrapedPlaceRecord } from '../types/places';
 import { GoogleMapsUrlParser } from './parser';
 import { RateLimiter } from '../utils/rate-limiter';
 import { generateSyntheticPlaceId } from '../utils/crypto';
+import { isLegitimatePlaceTitle, isPlausibleGeoCoordinate } from '../utils/validation';
 
 export class MapsVirtualScroller {
   private container: HTMLElement | null = null;
@@ -342,13 +343,10 @@ export class MapsVirtualScroller {
 
     const newlyAdded: ScrapedPlaceRecord[] = [];
 
-    // 2. Query all candidate anchors
+    // 2. Query all candidate anchors restricted to place links
     const anchorSelectors = [
       'a[href*="/maps/place/"]',
       'a[href*="/place/"]',
-      'a[href*="/maps/search/"]',
-      'a[href*="/maps/@"]',
-      'a[href*="google.com/maps"]',
       'a[data-href*="/maps/place/"]',
       'a[data-href*="/place/"]',
       'a.hfpxzc',
@@ -357,8 +355,8 @@ export class MapsVirtualScroller {
     const anchors = new Set<HTMLAnchorElement>();
     root.querySelectorAll<HTMLAnchorElement>(anchorSelectors.join(', ')).forEach((a) => anchors.add(a));
 
-    // Also check global tooltips/previews in case Google renders them at document level
-    document.querySelectorAll<HTMLAnchorElement>('div[role="tooltip"] a, div[role="dialog"] a').forEach((a) => anchors.add(a));
+    // Also check global tooltips/previews if they contain place links
+    document.querySelectorAll<HTMLAnchorElement>('div[role="tooltip"] a[href*="/place/"], div[role="dialog"] a[href*="/place/"]').forEach((a) => anchors.add(a));
 
     anchors.forEach((anchor) => {
       const url = anchor.href || anchor.getAttribute('data-href') || '';
@@ -371,7 +369,8 @@ export class MapsVirtualScroller {
         anchor.closest('div[role="article"], div.Nv2PK')?.querySelector('.fontHeadlineSmall, .qBF1Pd, [role="heading"], span.OSrXXb')?.textContent?.trim() ||
         '';
 
-      if (!title) return;
+      if (!title || !isLegitimatePlaceTitle(title)) return;
+      if (!isPlausibleGeoCoordinate(parsedCoords.latitude, parsedCoords.longitude)) return;
 
       const id =
         parsedCoords.placeId ||

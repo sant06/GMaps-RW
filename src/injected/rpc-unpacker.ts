@@ -4,8 +4,7 @@
 
 import type { AmbientAuthContext } from '../types/rpc';
 import type { ScrapedPlaceRecord } from '../types/places';
-import { isValidCoordinate } from '../utils/coordinates';
-import { generateSyntheticPlaceId } from '../utils/crypto';
+import { isPlausibleGeoCoordinate, isLegitimatePlaceTitle } from '../utils/validation';
 
 export interface UnpackedRpcPayload {
   rpcId?: string;
@@ -163,7 +162,7 @@ export class BatchexecuteUnpacker {
     // Scan array elements for typical Google Maps place markers
     for (const elem of arr) {
       if (typeof elem === 'string') {
-        // Place ID marker: ChIJ... (23-30 chars)
+        // Place ID marker: ChIJ... (20+ chars)
         if (elem.startsWith('ChIJ') && elem.length >= 20 && !placeId) {
           placeId = elem;
         }
@@ -171,59 +170,73 @@ export class BatchexecuteUnpacker {
         if (/^0x[0-9a-fA-F]+:0x[0-9a-fA-F]+$/.test(elem) && !placeId) {
           placeId = elem;
         }
-      } else if (Array.isArray(elem) && elem.length >= 2) {
-        // Scan for adjacent coordinates in array (supports [lat, lng], [null, null, lat, lng], [lat, lng, zoom])
+      } else if (Array.isArray(elem)) {
+        // Check if sub-array contains placeId or FID
+        for (const sub of elem) {
+          if (typeof sub === 'string') {
+            if (sub.startsWith('ChIJ') && sub.length >= 20 && !placeId) {
+              placeId = sub;
+            } else if (/^0x[0-9a-fA-F]+:0x[0-9a-fA-F]+$/.test(sub) && !placeId) {
+              placeId = sub;
+            }
+          }
+        }
+        // Scan for coordinates in array (supports [lat, lng], [null, null, lat, lng], [lat, lng, zoom])
         for (let i = 0; i < elem.length - 1; i++) {
           const n1 = elem[i];
           const n2 = elem[i + 1];
           if (typeof n1 === 'number' && typeof n2 === 'number') {
-            if (isValidCoordinate(n1, n2) && (Math.abs(n1) > 0.0001 || Math.abs(n2) > 0.0001) && lat === undefined) {
+            if (isPlausibleGeoCoordinate(n1, n2) && lat === undefined) {
               lat = n1;
               lng = n2;
               break;
-            } else if (isValidCoordinate(n1 / 1e7, n2 / 1e7) && Math.abs(n1) > 1000 && lat === undefined) {
+            } else if (isPlausibleGeoCoordinate(n1 / 1e7, n2 / 1e7) && Math.abs(n1) > 1000 && lat === undefined) {
               lat = n1 / 1e7;
               lng = n2 / 1e7;
               break;
             }
           }
         }
-      } else if (elem && typeof elem === 'object' && !Array.isArray(elem)) {
+      } else if (elem && typeof elem === 'object') {
         // Support { lat, lng } or { latitude, longitude } objects
         const obj = elem as Record<string, unknown>;
         const objLat = typeof obj.lat === 'number' ? obj.lat : typeof obj.latitude === 'number' ? obj.latitude : undefined;
         const objLng = typeof obj.lng === 'number' ? obj.lng : typeof obj.longitude === 'number' ? obj.longitude : undefined;
-        if (objLat !== undefined && objLng !== undefined && isValidCoordinate(objLat, objLng) && lat === undefined) {
+        if (objLat !== undefined && objLng !== undefined && isPlausibleGeoCoordinate(objLat, objLng) && lat === undefined) {
           lat = objLat;
           lng = objLng;
         }
       }
     }
 
+    // In Batchexecute RPC payloads, a legitimate place record MUST have a valid Place ID or FID.
+    // Protobuf returns thousands of metadata arrays with numbers and strings; without an ID, it is internal data.
+    if (!placeId) {
+      return null;
+    }
+
     // Look for place title (string of reasonable length not matching IDs or URLs)
     for (const elem of arr) {
       if (
         typeof elem === 'string' &&
-        elem.length > 1 &&
-        elem.length < 120 &&
+        elem !== placeId &&
+        isLegitimatePlaceTitle(elem) &&
         !elem.startsWith('ChIJ') &&
-        !elem.startsWith('http') &&
         !elem.startsWith('0x') &&
         !title
       ) {
         title = elem;
       }
-      if (typeof elem === 'string' && elem.length > 0 && elem !== title && !userNote) {
+      if (typeof elem === 'string' && elem.length > 0 && elem !== title && elem !== placeId && !userNote) {
         if (elem.includes(',') || /\d+/.test(elem)) {
           address = elem;
         }
       }
     }
 
-    if (title && lat !== undefined && lng !== undefined) {
-      const id = placeId || generateSyntheticPlaceId(title, lat, lng);
+    if (title && lat !== undefined && lng !== undefined && isPlausibleGeoCoordinate(lat, lng)) {
       return {
-        id,
+        id: placeId,
         title,
         url: `https://www.google.com/maps/place/?q=${lat.toFixed(6)},${lng.toFixed(6)}`,
         latitude: lat,

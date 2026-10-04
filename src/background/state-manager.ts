@@ -9,6 +9,7 @@ import { DEFAULT_SETTINGS } from '../types/storage';
 import type { AmbientAuthContext } from '../types/rpc';
 import type { ScrapedPlaceRecord, GoogleMapsListSummary } from '../types/places';
 import type { ExtractionProgressStats, MutationProgressStats, PipelineEngineStatus } from '../types/messages';
+import { isLegitimatePlaceTitle, isPlausibleGeoCoordinate } from '../utils/validation';
 
 export class StateManager {
   private static readonly SESSION_KEY = 'GMAPS_SESSION_STATE';
@@ -60,7 +61,9 @@ export class StateManager {
     const session = await this.getSessionState();
     const map = new Map<string, ScrapedPlaceRecord>();
     session.harvestedBuffer.forEach((p) => map.set(p.id, p));
-    items.forEach((p) => map.set(p.id, p));
+    items
+      .filter((p) => isLegitimatePlaceTitle(p.title) && isPlausibleGeoCoordinate(p.latitude, p.longitude))
+      .forEach((p) => map.set(p.id, p));
     session.harvestedBuffer = Array.from(map.values());
     await this.saveSessionState(session);
     return session.harvestedBuffer.length;
