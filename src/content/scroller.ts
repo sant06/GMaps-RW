@@ -11,6 +11,12 @@ import { RateLimiter } from '../utils/rate-limiter';
 import { generateSyntheticPlaceId } from '../utils/crypto';
 import { isLegitimatePlaceTitle, isPlausibleGeoCoordinate } from '../utils/validation';
 
+export interface SavedListDirectoryEntry {
+  title: string;
+  itemCount: number;
+  element: HTMLElement;
+}
+
 export class MapsVirtualScroller {
   private container: HTMLElement | null = null;
   private harvestedMap: Map<string, ScrapedPlaceRecord> = new Map();
@@ -35,6 +41,12 @@ export class MapsVirtualScroller {
    * Locates Google Maps virtualized container using multi-level heuristic detection.
    */
   public findPrimaryContainer(): HTMLElement | null {
+    // If Google Maps is currently displaying the Saved Lists Directory Hub,
+    // do not treat the directory container as a place list!
+    if (this.isSavedListsHub()) {
+      return null;
+    }
+
     const placeSelectors = [
       '.fontHeadlineSmall',
       '.qBF1Pd',
@@ -190,6 +202,65 @@ export class MapsVirtualScroller {
   ): Promise<ScrapedPlaceRecord[]> {
     logCallback?.('info', 'ACTION', 'Iniciando escaneo del DOM en busca de la lista de lugares...');
 
+    // 0. Auto-Navigation: If currently on the Saved Lists Directory Hub, iterate and extract each list with places
+    if (this.isSavedListsHub()) {
+      const allLists = this.scanSavedListsInHub();
+      const targets = allLists.filter((l) => l.itemCount > 0);
+
+      if (targets.length > 0) {
+        logCallback?.(
+          'info',
+          'NAV',
+          `Directorio de listas guardadas detectado (${targets.length} listas con contenido encontradas: ${targets.map((t) => `"${t.title}" [${t.itemCount} sitios]`).join(', ')}).`
+        );
+
+        for (let i = 0; i < targets.length; i++) {
+          if (this.isAborted) break;
+          const target = targets[i];
+          logCallback?.('info', 'NAV', `Abriendo automáticamente lista "${target.title}" (${target.itemCount} sitios)...`);
+          const opened = await this.openSavedListFromHub(target);
+          if (!opened) {
+            logCallback?.('warn', 'NAV', `No se pudo abrir la lista "${target.title}". Continuando...`);
+            continue;
+          }
+
+          // Wait for items container to mount
+          for (let attempt = 0; attempt < 10; attempt++) {
+            this.container = this.findPrimaryContainer();
+            if (this.container) break;
+            await this.rateLimiter.sleep(350);
+          }
+
+          if (this.container) {
+            const containerDesc = `<${this.container.tagName.toLowerCase()}${this.container.className ? '.' + this.container.className.split(' ').slice(0, 2).join('.') : ''}>`;
+            logCallback?.('info', 'DOM', `Contenedor de lista "${target.title}" localizado: ${containerDesc}.`);
+            await this.executeScrollHarvestLoop(progressCallback, logCallback);
+            logCallback?.('info', 'EXTRACT', `Lista "${target.title}": Procesada. Total acumulado: ${this.harvestedMap.size} lugares.`);
+          }
+
+          if (i < targets.length - 1) {
+            logCallback?.('info', 'NAV', 'Volviendo al directorio de listas guardadas para la siguiente lista...');
+            await this.clickBackButton();
+            await this.rateLimiter.sleep(1200);
+          }
+        }
+
+        if (this.harvestedMap.size > 0) {
+          logCallback?.('info', 'SUCCESS', `Extracción completada. ${this.harvestedMap.size} lugares listos para exportar a Excel, GeoJSON, KML o CSV.`);
+          return Array.from(this.harvestedMap.values());
+        }
+      } else if (allLists.length > 0) {
+        logCallback?.(
+          'warn',
+          'EMPTY',
+          'Todas las listas guardadas en la cuenta están vacías (0 sitios). Por favor guarda lugares en Google Maps y vuelve a intentar.'
+        );
+        throw new Error(
+          'Todas las listas guardadas en tu cuenta de Google Maps están vacías (0 sitios). Guarda lugares en tus listas y vuelve a intentar.'
+        );
+      }
+    }
+
     if (!this.container) {
       this.container = this.findPrimaryContainer();
     }
@@ -200,7 +271,13 @@ export class MapsVirtualScroller {
       const opened = await this.tryAutoOpenSavedPanel();
       if (opened) {
         logCallback?.('info', 'NAV', 'Botón de "Guardados" presionado. Esperando montaje del panel...');
-        await this.rateLimiter.sleep(1200);
+        await this.rateLimiter.sleep(1500);
+
+        // Check if hub opened after clicking Guardados
+        if (this.isSavedListsHub()) {
+          return this.runExtraction(progressCallback, logCallback);
+        }
+
         this.container = this.findPrimaryContainer();
       }
     }
@@ -227,6 +304,32 @@ export class MapsVirtualScroller {
         isStagnant: false,
       });
     }
+
+    await this.executeScrollHarvestLoop(progressCallback, logCallback);
+
+    if (this.harvestedMap.size === 0) {
+      logCallback?.(
+        'warn',
+        'EMPTY',
+        'Extracción finalizada sin lugares. Por favor abre tu lista (ej. Guardados -> Favoritos / Sitios destacados) en Google Maps para que la lista sea visible y vuelve a intentar.'
+      );
+      throw new Error(
+        'No se detectaron lugares en la vista actual. Por favor abre tu lista de lugares guardados en Google Maps (ej. Menú ☰ -> Guardados 🔖 -> selecciona tu lista).'
+      );
+    }
+
+    logCallback?.('info', 'SUCCESS', `Extracción completada. ${this.harvestedMap.size} lugares listos para exportar a Excel, GeoJSON, KML o CSV.`);
+    return Array.from(this.harvestedMap.values());
+  }
+
+  /**
+   * Executes the scrolling harvesting loop on the currently active container.
+   */
+  private async executeScrollHarvestLoop(
+    progressCallback: (stats: { count: number; newlyAdded: ScrapedPlaceRecord[]; isStagnant: boolean }) => void,
+    logCallback?: (level: 'info' | 'warn' | 'error', tag: string, message: string) => void
+  ): Promise<void> {
+    if (!this.container) return;
 
     let stagnationCycles = 0;
     const MAX_STAGNATION_LIMIT = 6;
@@ -287,7 +390,7 @@ export class MapsVirtualScroller {
         }
 
         if (this.harvestedMap.size === initialCount && stagnationCycles >= MAX_STAGNATION_LIMIT) {
-          logCallback?.('info', 'COMPLETE', `Ciclo #${cycle}: Final de la lista alcanzado tras ${cycle} ciclos. Extracción finalizada con éxito.`);
+          logCallback?.('info', 'COMPLETE', `Ciclo #${cycle}: Final de la lista alcanzado tras ${cycle} ciclos.`);
           break;
         }
       }
@@ -300,20 +403,230 @@ export class MapsVirtualScroller {
       // Fast, responsive delay (300ms - 550ms)
       await this.rateLimiter.applyAdaptiveDelay();
     }
+  }
 
-    if (this.harvestedMap.size === 0) {
-      logCallback?.(
-        'warn',
-        'EMPTY',
-        'Extracción finalizada sin lugares. Por favor abre tu lista (ej. Guardados -> Favoritos / Sitios destacados) en Google Maps para que la lista sea visible y vuelve a intentar.'
-      );
-      throw new Error(
-        'No se detectaron lugares en la vista actual. Por favor abre tu lista de lugares guardados en Google Maps (ej. Menú ☰ -> Guardados 🔖 -> selecciona tu lista).'
-      );
+  /**
+   * Identifies whether Google Maps is currently displaying the Saved Lists Directory Hub.
+   */
+  public isSavedListsHub(): boolean {
+    // If a list is already opened, there is a Back button or "Añadir un sitio" button
+    const hasBackBtn = document.querySelector<HTMLElement>(
+      'button[aria-label*="Atrás" i], button[aria-label*="Back" i], button[aria-label*="Volver" i]'
+    );
+    if (hasBackBtn && hasBackBtn.offsetParent !== null) {
+      return false;
     }
 
-    logCallback?.('info', 'SUCCESS', `Extracción completada. ${this.harvestedMap.size} lugares listos para exportar a Excel, GeoJSON, KML o CSV.`);
-    return Array.from(this.harvestedMap.values());
+    const hasAddPlaceBtn = Array.from(document.querySelectorAll('button, div[role="button"]')).some((b) =>
+      /añadir un sitio|add a place|agregar un sitio/i.test(b.getAttribute('aria-label') || b.textContent || '')
+    );
+    if (hasAddPlaceBtn) {
+      return false;
+    }
+
+    // 1. Check for "+ Nueva lista" / "+ New list" button
+    const hasNewListBtn = Array.from(document.querySelectorAll('button, div[role="button"]')).some((b) =>
+      /nueva lista|new list|create list/i.test(b.getAttribute('aria-label') || b.textContent || '')
+    );
+
+    // 2. Check for URL matching data=!4m2!10m1!1e1 or containing 10m1!1e1
+    const isHubUrl = window.location.href.includes('10m1!1e1');
+
+    // 3. Check for presence of list count cards (e.g. "sitios", "places", "lugares") in left panel
+    const countRegex = /\b\d+\s*(?:sitios?|places?|lugares?|locais|local|lieux?|orte?|luoghi?|luogo|items?|elementos?)\b/i;
+    const hasCountLabels = Array.from(document.querySelectorAll('div.m6QErb, #pane, div[role="main"]')).some((el) =>
+      countRegex.test(el.textContent || '')
+    );
+
+    return hasNewListBtn || (isHubUrl && hasCountLabels);
+  }
+
+  /**
+   * Scans all custom and predefined saved lists present in the Saved Lists Directory.
+   */
+  public scanSavedListsInHub(): SavedListDirectoryEntry[] {
+    const entries: SavedListDirectoryEntry[] = [];
+    const countRegex = /\b(\d+)\s*(?:sitios?|places?|lugares?|locais|local|lieux?|orte?|luoghi?|luogo|items?|elementos?)\b/i;
+
+    const countAllOccurrences = (str: string): number => {
+      const matches = str.match(new RegExp(countRegex.source, 'gi'));
+      return matches ? matches.length : 0;
+    };
+
+    const container = document.querySelector<HTMLElement>('div.m6QErb, #pane, div[role="main"]') || document.body;
+    const candidates = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        'div.m6QErb > div, div[role="button"], div[jsaction*="click"], a[href*="placelist"], div.fontHeadlineSmall, div.qBF1Pd'
+      )
+    );
+
+    for (const el of candidates) {
+      const text = el.innerText || el.textContent || '';
+      const countMatch = text.match(countRegex);
+      if (!countMatch) continue;
+
+      // Ensure this element represents a single card row (not the container containing multiple lists)
+      const totalCountsInEl = countAllOccurrences(text);
+      if (totalCountsInEl > 1) continue;
+
+      const parentText = el.parentElement ? el.parentElement.innerText || el.parentElement.textContent || '' : '';
+      const totalCountsInParent = countAllOccurrences(parentText);
+      // The individual row's parent container typically has multiple counts (or is the pane)
+      if (totalCountsInParent === 1 && el.clientHeight > 180) {
+        continue; // Skip tall parent wrapper
+      }
+
+      const count = parseInt(countMatch[1], 10);
+      const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+
+      const titleCandidate = lines.find((line) => {
+        if (countRegex.test(line)) return false;
+        if (/^(?:compartida|privada|shared|private|pública|public)\b/i.test(line)) return false;
+        if (line.startsWith('+')) return false;
+        if (line.length < 2) return false;
+        return true;
+      });
+
+      const title = titleCandidate || el.getAttribute('aria-label') || 'Lista';
+
+      if (!entries.some((e) => e.title.toLowerCase() === title.toLowerCase())) {
+        entries.push({
+          title,
+          itemCount: count,
+          element: el,
+        });
+      }
+    }
+
+    return entries;
+  }
+
+  /**
+   * Programmatically opens a specific saved list from the directory.
+   */
+  public async openSavedListFromHub(target: SavedListDirectoryEntry): Promise<boolean> {
+    let card = target.element;
+    if (!document.body.contains(card)) {
+      const freshLists = this.scanSavedListsInHub();
+      const fresh = freshLists.find((l) => l.title.toLowerCase() === target.title.toLowerCase());
+      if (fresh) {
+        card = fresh.element;
+      }
+    }
+
+    const isMenuButton = (el: Element | null): boolean => {
+      if (!el) return false;
+      const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+      const hasPopup = el.getAttribute('aria-haspopup');
+      return (
+        hasPopup === 'true' ||
+        hasPopup === 'menu' ||
+        /más acciones|acciones|more actions|options|opciones|menú|menu/i.test(ariaLabel)
+      );
+    };
+
+    const allDescendants = Array.from(card.querySelectorAll<HTMLElement>('*'));
+    const titleEl = allDescendants.find(
+      (child) => child.children.length === 0 && child.textContent?.trim() === target.title
+    );
+
+    const clickCandidates: HTMLElement[] = [];
+    if (titleEl) {
+      clickCandidates.push(titleEl);
+      let p = titleEl.parentElement;
+      while (p && p !== card) {
+        if (!isMenuButton(p)) {
+          clickCandidates.push(p);
+        }
+        p = p.parentElement;
+      }
+    }
+
+    const anchor = card.querySelector<HTMLElement>('a[href]');
+    if (anchor && !isMenuButton(anchor)) {
+      clickCandidates.push(anchor);
+    }
+
+    const buttonEl = card.querySelector<HTMLElement>('div[role="button"]');
+    if (buttonEl && !isMenuButton(buttonEl)) {
+      clickCandidates.push(buttonEl);
+    }
+
+    if (!isMenuButton(card)) {
+      clickCandidates.push(card);
+    }
+
+    for (const clickTarget of clickCandidates) {
+      clickTarget.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      const rect = clickTarget.getBoundingClientRect();
+      const clientX = rect.left + rect.width / 2;
+      const clientY = rect.top + rect.height / 2;
+      const opts: MouseEventInit = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX,
+        clientY,
+      };
+
+      clickTarget.dispatchEvent(new PointerEvent('pointerdown', opts));
+      clickTarget.dispatchEvent(new MouseEvent('mousedown', opts));
+      clickTarget.dispatchEvent(new PointerEvent('pointerup', opts));
+      clickTarget.dispatchEvent(new MouseEvent('mouseup', opts));
+      clickTarget.dispatchEvent(new MouseEvent('click', opts));
+      if (typeof clickTarget.click === 'function') {
+        clickTarget.click();
+      }
+
+      // Poll up to 2 seconds per candidate to see if navigation triggered
+      for (let poll = 0; poll < 6; poll++) {
+        await this.rateLimiter.sleep(300);
+        const hasAddPlace = Array.from(document.querySelectorAll('button, div[role="button"]')).some((b) =>
+          /añadir un sitio|add a place|agregar un sitio/i.test(b.getAttribute('aria-label') || b.textContent || '')
+        );
+        const hasBack = document.querySelector<HTMLElement>(
+          'button[aria-label*="Atrás" i], button[aria-label*="Back" i], button[aria-label*="Volver" i]'
+        );
+        const hasNotes = document.querySelectorAll('button[aria-label*="nota" i], [aria-label*="note" i]').length > 0;
+        if (hasAddPlace || hasBack || hasNotes || !this.isSavedListsHub()) {
+          await this.rateLimiter.sleep(600);
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Clicks the back navigation button to return from a placelist view to the Saved Lists directory.
+   */
+  public async clickBackButton(): Promise<boolean> {
+    const backSelectors = [
+      'button[aria-label*="Atrás" i]',
+      'button[aria-label*="Volver" i]',
+      'button[aria-label*="Back" i]',
+      'button[data-tooltip*="Atrás" i]',
+      'button[data-tooltip*="Back" i]',
+      'button[jsaction*="back" i]',
+    ];
+
+    for (const sel of backSelectors) {
+      const btn = document.querySelector<HTMLElement>(sel);
+      if (btn && btn.offsetParent !== null) {
+        btn.click();
+        // Wait until hub is visible again
+        for (let poll = 0; poll < 10; poll++) {
+          await this.rateLimiter.sleep(300);
+          if (this.isSavedListsHub()) {
+            return true;
+          }
+        }
+        return true;
+      }
+    }
+    return false;
   }
 
   public pause(): void {

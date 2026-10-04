@@ -424,3 +424,54 @@ Este fallo se produjo por la intersección de tres desalineaciones arquitectóni
 >    - Admite marcadores huérfanos reconocidos por semántica (`Dropped pin`, `Marcador`) asignándoles identificadores sintéticos determinísticos basados en sus coordenadas.
 > 4. **Detección Inmediata de Listas Cortas:**
 >    Si el contenedor de la lista no tiene desbordamiento vertical (`scrollHeight <= clientHeight + 40`) y ya contiene lugares cosechados, el ciclo debe finalizar de inmediato (`COMPLETE`), evitando ciclos de scroll vacíos e innecesarios.
+
+---
+
+## 17. Detección y Navegación Autónoma entre el Directorio de Guardados (Hub de Listas) y las Listas Individuales en Google Maps
+
+### Síntoma / Error
+Al presionar "Start Extraction" teniendo abierta la pestaña "Listas" del panel "Guardados" (`data=!4m2!10m1!1e1`), la extensión reportaba:
+```text
+[DOM] Contenedor de lista localizado: <div.m6QErb.WNBkOb> (ScrollHeight: 711px).
+[SCROLL] Ciclo #1: Scroll +495px (Posición: 0px). Lugares: 0.
+...
+[COMPLETE] Ciclo #6: Final de la lista alcanzado tras 6 ciclos. Extracción finalizada con éxito.
+[EMPTY] Extracción finalizada sin lugares. Por favor abre tu lista (ej. Guardados -> Favoritos / Sitios destacados) en Google Maps para que la lista sea visible y vuelve a intentar.
+[EXTRACTION] No se detectaron lugares en la vista actual. Por favor abre tu lista de lugares guardados en Google Maps (ej. Menú ☰ -> Guardados 🔖 -> selecciona tu lista).
+```
+A pesar de que el usuario tenía en pantalla sus listas visibles ("Mayo24" con 10 sitios, "Pacific Islands" con 1 sitio), la extensión no extraía ningún lugar y le exigía al usuario que interactuara manualmente con Google Maps abriendo la lista.
+
+### Causa Raíz
+1. **Confusión Arquitectónica entre Directorio de Carpetas (Hub de Listas) vs. Feed de Lugares (Placelist):**
+   - En Google Maps, el panel principal de Guardados (`data=!4m2!10m1!1e1`) es un **Directorio de Listas**: sus tarjetas representan carpetas o listas ("Favoritos", "Mayo24", "Pacific Islands"), no lugares geográficos individuales.
+   - El contenedor del directorio utiliza exactamente las mismas clases CSS de utilidad (`<div.m6QErb.WNBkOb>`) que las vistas de lugares.
+   - El detector heurístico tomaba el contenedor del directorio de listas como si fuera una lista de lugares, lo recorría haciendo scroll, no encontraba enlaces con coordenadas (porque los lugares están adentro de cada lista) y concluía que la lista estaba vacía.
+2. **Sutilezas Lingüísticas en Conteos de Listas (Singular vs. Plural):**
+   - Las tarjetas del directorio muestran el conteo de elementos: `"10 sitios"` o `"0 sitios"` (plural), pero si una lista tiene exactamente un lugar, Google Maps muestra `"1 sitio"` (singular), o en inglés `"1 place"`.
+   - Expresiones regulares que buscan únicamente plural (`sitios|places|lugares`) omiten silenciosamente cualquier lista de 1 solo sitio.
+3. **Peligro de Clic en el Botón Secundario de Opciones (Menú de Tres Puntos):**
+   - Cada tarjeta de lista en el directorio contiene un botón de menú de tres puntos verticales (`⋮`) para compartir o editar la lista.
+   - Si un script despacha un evento de clic genérico al primer botón interactivo de la tarjeta (`div[role="button"]`), activa el menú emergente de opciones en lugar de abrir y navegar hacia el contenido de la lista.
+4. **Nodos Desconectados (Detached DOM Nodes) tras Navegación SPA:**
+   - Cuando la extensión entra programáticamente a una lista y luego pulsa el botón "Atrás" para regresar al directorio, Google Maps desmonta y reconstruye los nodos HTML del directorio.
+   - Cualquier referencia a elementos DOM almacenada antes de la navegación queda descolgada del árbol principal (`document.body.contains(el) === false`), provocando que clics posteriores no tengan ningún efecto.
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Jerarquía de Vistas y Orquestación Multi-Lista Desatendida en Extensiones**:
+> 1. **Detección Formal del Nivel Jerárquico (Hub vs. Leaf Feed):**
+>    Toda extensión de extracción debe identificar inequívocamente en qué nivel de la taxonomía del sitio se encuentra:
+>    - **Vista Hub de Listas:** Presencia del botón `+ Nueva lista` / `New list`, URL con `10m1!1e1`, ausencia de botones específicos de lugar como `+ Añadir un sitio` o `+ Nota`.
+>    - **Vista de Lista Individual:** Presencia de `+ Añadir un sitio` / `Add a place`, botones `+ Nota`, y encabezado con el título específico de la lista.
+> 2. **Extracción Multi-Lista Autónoma sin Intervención Humana:**
+>    Si el usuario inicia la extracción mientras está en el Hub de Listas, la extensión jamás debe arrojar un error ni pedirle que haga clics manuales. Debe:
+>    - Escanear todas las listas del usuario y filtrar aquellas con elementos (`itemCount > 0`).
+>    - Abrir programáticamente cada lista con contenido.
+>    - Esperar el montaje del contenedor de lugares y cosechar sus entidades (combinando la captura RPC con el escaneo de DOM).
+>    - Regresar automáticamente al directorio con el botón "Atrás", verificar que el hub se remontó y continuar con la siguiente lista.
+>    - Consolidar todos los lugares cosechados en una sola exportación unificada.
+> 3. **Segmentación y Aislamiento de Objetivos de Clic:**
+>    Al automatizar clics en tarjetas de interfaz compuestas, descarta terminantemente cualquier elemento con `aria-haspopup="true"`, `aria-haspopup="menu"` o selectores de menú contextual (`más acciones`, `more options`). Dirige el puntero al elemento hoja del título (`titleEl`) o al enlace de navegación principal.
+> 4. **Re-resolución Dinámica contra el DOM Activo:**
+>    En aplicaciones web SPA de ciclo de vida reactivo, nunca reutilices referencias a nodos HTML entre transiciones de pantalla. En cada iteración, re-escanea el DOM vivo para obtener referencias a nodos frescos y conectados.
+

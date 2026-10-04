@@ -114,7 +114,7 @@ function connectToBackground(): void {
     pipelinePort.onMessage.addListener(handleWorkerMessage);
 
     pipelinePort.onDisconnect.addListener(() => {
-      console.warn('[Content Script] Pipeline port disconnected.');
+      console.log('[Content Script] Pipeline port disconnected.');
       stopClientHeartbeat();
       pipelinePort = null;
       if (chrome.runtime?.id) {
