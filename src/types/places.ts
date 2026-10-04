@@ -1,5 +1,6 @@
 /**
  * Domain data models for Google Maps places, lists, notes, and spatial export formats.
+ * Captures comprehensive place attributes for deep auditing and tabular export.
  */
 
 export interface ParsedPlaceCoordinates {
@@ -8,6 +9,7 @@ export interface ParsedPlaceCoordinates {
   isHighPrecision: boolean;
   placeId?: string;
   featureId?: string;
+  cid?: string;
 }
 
 export type ListCategoryType = 'favorites' | 'starred' | 'want_to_go' | 'travel_plans' | 'custom';
@@ -23,6 +25,8 @@ export interface GoogleMapsListSummary {
   lastUpdated?: string;
 }
 
+export type OperationalStatus = 'Operational' | 'Permanently closed' | 'Temporarily closed' | 'Unknown';
+
 export interface ScrapedPlaceRecord {
   id: string; // ChIJ PlaceId, 0x Hex FID, or synthetic fallback
   title: string;
@@ -30,15 +34,25 @@ export interface ScrapedPlaceRecord {
   latitude: number;
   longitude: number;
   isHighPrecision: boolean;
-  address?: string;
-  category?: string;
-  userNote?: string;
-  listId?: string;
-  listTitle?: string;
+  precisionType?: 'High-Precision Pin (!3d/!4d)' | 'Viewport Camera (@lat,lng)';
   placeId?: string; // Standard ChIJ...
   featureId?: string; // Hex 0x...:0x...
+  cid?: string; // Numeric Customer ID
+  listId?: string;
+  listTitle?: string;
+  listType?: ListCategoryType;
+  userNote?: string;
+  address?: string;
+  category?: string;
+  phoneNumber?: string;
+  websiteUrl?: string;
+  rating?: number;
+  reviewCount?: number;
+  priceLevel?: string;
+  operationalStatus?: OperationalStatus;
   isClosed?: boolean;
-  extractedAt: string; // ISO 8601
+  dateAddedToList?: string; // ISO 8601 or formatted date when user saved the place
+  extractedAt: string; // ISO 8601 extraction timestamp
 }
 
 // Ingestion payload for Write Engine
@@ -66,6 +80,37 @@ export interface MutationResult {
 }
 
 // ============================================================================
+// EXCEL (.XLSX) EXPORT STRUCTURE
+// ============================================================================
+
+export interface ExcelPlaceRow {
+  'Pin / Place Title': string;
+  'Latitude': number;
+  'Longitude': number;
+  'Coordinates (Lat, Lng)': string;
+  'Precision Tier': string;
+  'Google Place ID': string;
+  'Hex Feature ID': string;
+  'CID Number': string;
+  'List Name': string;
+  'List ID': string;
+  'List Type': string;
+  'Personal User Note': string;
+  'Full Address': string;
+  'Place Category': string;
+  'Phone Number': string;
+  'Website URL': string;
+  'Rating Score': string | number;
+  'Review Count': string | number;
+  'Price Level': string;
+  'Operational Status': string;
+  'Date Added to List': string;
+  'Extraction Timestamp': string;
+  'Google Maps URL': string;
+  'Direct Search Query URL': string;
+}
+
+// ============================================================================
 // SPATIAL EXPORT / IMPORT FORMATS (RFC 7946 GeoJSON, KML 2.2, RFC 4180 CSV)
 // ============================================================================
 
@@ -85,9 +130,11 @@ export interface GeoJSONPlaceProperties {
   listTitle: string | null;
   placeId: string | null;
   featureId: string | null;
+  cid: string | null;
   isHighPrecision: boolean;
-  isClosed: boolean;
-  exportedAt: string;
+  operationalStatus: string;
+  dateAddedToList: string | null;
+  extractedAt: string;
   [key: string]: unknown;
 }
 
@@ -107,12 +154,23 @@ export interface CsvPlaceRow {
   Title: string;
   Latitude: number | string;
   Longitude: number | string;
+  Coordinates: string;
   Place_ID: string;
+  Feature_ID: string;
+  CID: string;
+  List_Title: string;
+  List_ID: string;
+  User_Note: string;
   Address: string;
   Category: string;
-  User_Note: string;
-  List_Title: string;
+  Phone_Number: string;
+  Website_URL: string;
+  Rating: string | number;
+  Review_Count: string | number;
+  Price_Level: string;
+  Operational_Status: string;
+  Date_Added_To_List: string;
   Source_URL: string;
-  Is_High_Precision: boolean | string;
-  Exported_At: string;
+  Precision_Type: string;
+  Extracted_At: string;
 }

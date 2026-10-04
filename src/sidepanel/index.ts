@@ -38,6 +38,7 @@ const btnPauseExtract = document.getElementById('btn-pause-extract') as HTMLButt
 const btnAbortExtract = document.getElementById('btn-abort-extract') as HTMLButtonElement;
 
 // Export buttons
+const btnExportExcel = document.getElementById('btn-export-excel') as HTMLButtonElement;
 const btnExportGeoJson = document.getElementById('btn-export-geojson') as HTMLButtonElement;
 const btnExportKml = document.getElementById('btn-export-kml') as HTMLButtonElement;
 const btnExportCsv = document.getElementById('btn-export-csv') as HTMLButtonElement;
@@ -195,6 +196,7 @@ function updateConnectionStatus(connected: boolean): void {
 
 function updateExportButtonsState(): void {
   const hasItems = harvestedPlaces.size > 0;
+  if (btnExportExcel) btnExportExcel.disabled = !hasItems;
   if (btnExportGeoJson) btnExportGeoJson.disabled = !hasItems;
   if (btnExportKml) btnExportKml.disabled = !hasItems;
   if (btnExportCsv) btnExportCsv.disabled = !hasItems;
@@ -264,6 +266,16 @@ function resetExtractionUiState(): void {
 // ============================================================================
 // SPATIAL EXPORT TRIGGERS
 // ============================================================================
+btnExportExcel?.addEventListener('click', () => {
+  const items = Array.from(harvestedPlaces.values());
+  if (items.length === 0) return;
+  const listName = inputTargetList?.value.trim() || 'Saved Places';
+  const blob = SpatialDataExporters.toExcel(items, listName);
+  const fileName = `google_maps_pins_${Date.now()}.xlsx`;
+  SpatialDataExporters.triggerDownload(blob, fileName);
+  logEntry('info', `Exported ${items.length} pins to Excel (.xlsx) organized in columns.`);
+});
+
 btnExportGeoJson?.addEventListener('click', () => {
   const items = Array.from(harvestedPlaces.values());
   if (items.length === 0) return;

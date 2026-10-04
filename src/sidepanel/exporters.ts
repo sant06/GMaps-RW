@@ -1,11 +1,96 @@
 /**
  * In-memory spatial data exporters for Google Maps entities.
- * Generates RFC 7946 GeoJSON, OGC KML 2.2, and RFC 4180 CSV Blobs directly in client memory.
+ * Generates formatted Excel (.xlsx), RFC 7946 GeoJSON, OGC KML 2.2, and RFC 4180 CSV Blobs.
  */
 
-import type { ScrapedPlaceRecord } from '../types/places';
+import * as XLSX from 'xlsx';
+import type { ScrapedPlaceRecord, ExcelPlaceRow } from '../types/places';
 
 export class SpatialDataExporters {
+  /**
+   * Generates a fully formatted Excel (.xlsx) workbook with all extractable place attributes,
+   * auto-fitted column widths, and an Audit Summary worksheet.
+   */
+  public static toExcel(items: ScrapedPlaceRecord[], defaultListName = 'Google Maps Saved Places'): Blob {
+    const rows: ExcelPlaceRow[] = items.map((item) => {
+      const precisionText = item.isHighPrecision
+        ? 'High-Precision Pin (!3d/!4d)'
+        : 'Viewport Camera (@lat,lng)';
+
+      const coordString = `${item.latitude.toFixed(6)}, ${item.longitude.toFixed(6)}`;
+      const status = item.operationalStatus || 'Operational';
+      const searchUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+        item.title
+      )}&query_place_id=${item.placeId || ''}`;
+
+      return {
+        'Pin / Place Title': item.title || 'Unnamed Pin',
+        'Latitude': item.latitude,
+        'Longitude': item.longitude,
+        'Coordinates (Lat, Lng)': coordString,
+        'Precision Tier': precisionText,
+        'Google Place ID': item.placeId || '',
+        'Hex Feature ID': item.featureId || '',
+        'CID Number': item.cid || '',
+        'List Name': item.listTitle || defaultListName,
+        'List ID': item.listId || '',
+        'List Type': item.listType || 'custom',
+        'Personal User Note': item.userNote || '',
+        'Full Address': item.address || '',
+        'Place Category': item.category || '',
+        'Phone Number': item.phoneNumber || '',
+        'Website URL': item.websiteUrl || '',
+        'Rating Score': item.rating != null ? item.rating : '',
+        'Review Count': item.reviewCount != null ? item.reviewCount : '',
+        'Price Level': item.priceLevel || '',
+        'Operational Status': status,
+        'Date Added to List': item.dateAddedToList || '',
+        'Extraction Timestamp': item.extractedAt || new Date().toISOString(),
+        'Google Maps URL': item.url || '',
+        'Direct Search Query URL': searchUrl,
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+
+    // Auto-fit column widths based on maximum content length
+    if (rows.length > 0) {
+      const columnKeys = Object.keys(rows[0]) as (keyof ExcelPlaceRow)[];
+      worksheet['!cols'] = columnKeys.map((key) => {
+        const headerLen = key.length;
+        const maxValLen = Math.max(
+          ...rows.map((row) => String(row[key] ?? '').length)
+        );
+        const wch = Math.min(Math.max(headerLen, maxValLen) + 3, 60);
+        return { wch };
+      });
+    }
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Saved Places & Pins');
+
+    // Audit Summary Sheet
+    const summaryData = [
+      { Metric: 'Total Pins / Places Harvested', Value: items.length },
+      { Metric: 'Export Timestamp', Value: new Date().toISOString() },
+      { Metric: 'High-Precision Pin Markers (!3d/!4d)', Value: items.filter((i) => i.isHighPrecision).length },
+      { Metric: 'Viewport Center Fallbacks (@lat,lng)', Value: items.filter((i) => !i.isHighPrecision).length },
+      { Metric: 'Places With Personal User Notes', Value: items.filter((i) => !!i.userNote).length },
+      { Metric: 'Places With Verified Place ID', Value: items.filter((i) => !!i.placeId).length },
+      { Metric: 'Target List Name', Value: items[0]?.listTitle || defaultListName },
+      { Metric: 'Export Engine', Value: 'GMaps-RW Production v1.0.0' },
+    ];
+
+    const summarySheet = XLSX.utils.json_to_sheet(summaryData);
+    summarySheet['!cols'] = [{ wch: 42 }, { wch: 45 }];
+    XLSX.utils.book_append_sheet(workbook, summarySheet, 'Audit Summary');
+
+    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    return new Blob([excelBuffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+  }
+
   /**
    * Generates an RFC 7946 compliant GeoJSON FeatureCollection Blob.
    */
@@ -30,8 +115,15 @@ export class SpatialDataExporters {
           listTitle: item.listTitle || null,
           placeId: item.placeId || null,
           featureId: item.featureId || null,
+          cid: item.cid || null,
+          phoneNumber: item.phoneNumber || null,
+          websiteUrl: item.websiteUrl || null,
+          rating: item.rating ?? null,
+          reviewCount: item.reviewCount ?? null,
+          priceLevel: item.priceLevel || null,
           isHighPrecision: item.isHighPrecision,
-          isClosed: !!item.isClosed,
+          operationalStatus: item.operationalStatus || 'Operational',
+          dateAddedToList: item.dateAddedToList || null,
           exportedAt: new Date().toISOString(),
         },
       })),
@@ -64,9 +156,15 @@ export class SpatialDataExporters {
       <description>${sanitize(item.userNote ? `Note: ${item.userNote}\n${item.address || ''}` : item.address || item.url)}</description>
       <ExtendedData>
         <Data name="Place_ID"><value>${sanitize(item.placeId || '')}</value></Data>
+        <Data name="Feature_ID"><value>${sanitize(item.featureId || '')}</value></Data>
+        <Data name="CID"><value>${sanitize(item.cid || '')}</value></Data>
         <Data name="User_Note"><value>${sanitize(item.userNote || '')}</value></Data>
+        <Data name="List_Name"><value>${sanitize(item.listTitle || '')}</value></Data>
+        <Data name="Address"><value>${sanitize(item.address || '')}</value></Data>
+        <Data name="Category"><value>${sanitize(item.category || '')}</value></Data>
+        <Data name="Date_Added"><value>${sanitize(item.dateAddedToList || '')}</value></Data>
+        <Data name="Precision"><value>${item.isHighPrecision ? 'Sub-meter Pin' : 'Viewport Camera'}</value></Data>
         <Data name="Source_URL"><value>${sanitize(item.url)}</value></Data>
-        <Data name="Precision"><value>${item.isHighPrecision ? 'Sub-meter' : 'Viewport'}</value></Data>
       </ExtendedData>
       <Point>
         <coordinates>${item.longitude},${item.latitude},0</coordinates>
@@ -88,20 +186,32 @@ ${placemarks}
   }
 
   /**
-   * Generates an RFC 4180 compliant CSV document Blob.
+   * Generates an RFC 4180 compliant CSV document Blob with all extractable fields.
    */
   public static toCSV(items: ScrapedPlaceRecord[]): Blob {
     const headers = [
       'Title',
       'Latitude',
       'Longitude',
+      'Coordinates',
       'Place_ID',
+      'Feature_ID',
+      'CID',
+      'List_Title',
+      'List_ID',
+      'User_Note',
       'Address',
       'Category',
-      'User_Note',
+      'Phone_Number',
+      'Website_URL',
+      'Rating',
+      'Review_Count',
+      'Price_Level',
+      'Operational_Status',
+      'Date_Added_To_List',
       'Source_URL',
-      'Is_High_Precision',
-      'Exported_At',
+      'Precision_Type',
+      'Extracted_At',
     ];
 
     const escapeField = (value: unknown): string => {
@@ -117,12 +227,24 @@ ${placemarks}
       escapeField(item.title),
       escapeField(item.latitude),
       escapeField(item.longitude),
+      escapeField(`${item.latitude.toFixed(6)}, ${item.longitude.toFixed(6)}`),
       escapeField(item.placeId || item.id),
+      escapeField(item.featureId || ''),
+      escapeField(item.cid || ''),
+      escapeField(item.listTitle || ''),
+      escapeField(item.listId || ''),
+      escapeField(item.userNote || ''),
       escapeField(item.address || ''),
       escapeField(item.category || ''),
-      escapeField(item.userNote || ''),
+      escapeField(item.phoneNumber || ''),
+      escapeField(item.websiteUrl || ''),
+      escapeField(item.rating ?? ''),
+      escapeField(item.reviewCount ?? ''),
+      escapeField(item.priceLevel || ''),
+      escapeField(item.operationalStatus || 'Operational'),
+      escapeField(item.dateAddedToList || ''),
       escapeField(item.url),
-      escapeField(item.isHighPrecision),
+      escapeField(item.isHighPrecision ? 'Sub-meter Pin' : 'Viewport Camera'),
       escapeField(item.extractedAt),
     ]);
 

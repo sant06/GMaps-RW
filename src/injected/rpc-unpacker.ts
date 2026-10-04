@@ -17,7 +17,7 @@ export class BatchexecuteUnpacker {
   private static readonly XSSI_PREFIX_REGEX = /^\)]\}'\s*\n?/;
 
   /**
-   * Strips anti-XSSI security prefix and parses nested Google JSON envelopes.
+   * Strips anti-XSSI security prefix and parses nested Google JSON envelopes using balanced-token extraction.
    */
   public static unpack(rawBody: string): UnpackedRpcPayload[] {
     if (!rawBody || typeof rawBody !== 'string') return [];
@@ -27,39 +27,73 @@ export class BatchexecuteUnpacker {
 
     const results: UnpackedRpcPayload[] = [];
 
-    // Attempt 1: Standard line-chunked batchexecute format
-    // Format: \n<chunk-byte-length>\n[["wrb.fr", "rpcId", "[...json-string...]", ...]]
-    const chunkRegex = /\[\["wrb\.fr",\s*"([^"]+)",\s*(".*?"|null|\[.*?\])/g;
-    let match: RegExpExecArray | null;
+    // Strategy 1: Balanced delimiter scan for batchexecute envelopes [["wrb.fr", ...]]
+    let searchIdx = 0;
+    while (searchIdx < cleaned.length) {
+      const startIdx = cleaned.indexOf('[["wrb.fr"', searchIdx);
+      if (startIdx === -1) break;
 
-    while ((match = chunkRegex.exec(cleaned)) !== null) {
-      try {
-        // Attempt to parse the full envelope
-        const envelopeMatch = cleaned.slice(match.index).match(/^(\[\["wrb\.fr".*?\]\])/);
-        if (envelopeMatch) {
-          const parsedEnvelope = JSON.parse(envelopeMatch[1]) as [string, string, string, ...unknown[]][];
-          for (const item of parsedEnvelope) {
-            if (item[0] === 'wrb.fr') {
-              const currentRpcId = item[1];
-              const innerPayloadString = item[2];
-              if (typeof innerPayloadString === 'string') {
-                try {
-                  const innerJson = JSON.parse(innerPayloadString);
-                  const places = this.deepExtractPlaces(innerJson);
-                  results.push({
-                    rpcId: currentRpcId,
-                    rawJson: innerJson,
-                    extractedPlaces: places,
-                  });
-                } catch {
-                  // Ignore JSON parse error of inner payload
-                }
-              }
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      let endIdx = -1;
+
+      for (let i = startIdx; i < cleaned.length; i++) {
+        const char = cleaned[i];
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (char === '\\') {
+          escape = true;
+          continue;
+        }
+        if (char === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (!inString) {
+          if (char === '[') depth++;
+          else if (char === ']') {
+            depth--;
+            if (depth === 0) {
+              endIdx = i + 1;
+              break;
             }
           }
         }
-      } catch {
-        // Continue parsing subsequent matches
+      }
+
+      if (endIdx !== -1) {
+        const jsonStr = cleaned.slice(startIdx, endIdx);
+        try {
+          const parsedEnvelope = JSON.parse(jsonStr) as [string, string, string, ...unknown[]][];
+          for (const item of parsedEnvelope) {
+            if (Array.isArray(item) && item[0] === 'wrb.fr') {
+              const currentRpcId = item[1];
+              const innerPayload = item[2];
+              let innerJson = innerPayload;
+              if (typeof innerPayload === 'string') {
+                try {
+                  innerJson = JSON.parse(innerPayload);
+                } catch {
+                  // Keep as string
+                }
+              }
+              const places = this.deepExtractPlaces(innerJson);
+              results.push({
+                rpcId: currentRpcId,
+                rawJson: innerJson,
+                extractedPlaces: places,
+              });
+            }
+          }
+        } catch {
+          // Ignore chunk parse error
+        }
+        searchIdx = endIdx;
+      } else {
+        searchIdx = startIdx + 10;
       }
     }
 
@@ -67,7 +101,7 @@ export class BatchexecuteUnpacker {
       return results;
     }
 
-    // Attempt 2: Direct top-level JSON array (e.g. /maps/preview/ or tbm=map)
+    // Strategy 2: Direct top-level JSON array (e.g. /maps/preview/ or tbm=map)
     try {
       const directJson = JSON.parse(cleaned);
       const places = this.deepExtractPlaces(directJson);
@@ -117,7 +151,7 @@ export class BatchexecuteUnpacker {
    * Evaluates an array structure to determine if it encodes a Google Maps place entity.
    */
   private static extractPlaceCandidateFromArray(arr: unknown[]): ScrapedPlaceRecord | null {
-    if (arr.length < 3) return null;
+    if (arr.length < 2) return null;
 
     let placeId: string | undefined;
     let title: string | undefined;
@@ -129,8 +163,8 @@ export class BatchexecuteUnpacker {
     // Scan array elements for typical Google Maps place markers
     for (const elem of arr) {
       if (typeof elem === 'string') {
-        // Place ID marker: ChIJ... (27 characters standard)
-        if (elem.startsWith('ChIJ') && elem.length >= 25 && !placeId) {
+        // Place ID marker: ChIJ... (23-30 chars)
+        if (elem.startsWith('ChIJ') && elem.length >= 20 && !placeId) {
           placeId = elem;
         }
         // Google Hex FID marker: 0x...:0x...
@@ -168,9 +202,7 @@ export class BatchexecuteUnpacker {
       ) {
         title = elem;
       }
-      // Check for note field (often nested or string tagged with custom note signatures)
       if (typeof elem === 'string' && elem.length > 0 && elem !== title && !userNote) {
-        // Potential address or note
         if (elem.includes(',') || /\d+/.test(elem)) {
           address = elem;
         }
@@ -203,7 +235,6 @@ export class BatchexecuteUnpacker {
     const wizData = (window as unknown as { WIZ_global_data?: Record<string, unknown> }).WIZ_global_data || {};
     const win = window as unknown as Record<string, unknown>;
 
-    // SNlM0e is Google's internal CSRF / 'at' token key
     const atToken = (wizData.SNlM0e as string) || (win._at as string) || undefined;
     const fSid = (wizData.FdrFJe as string) || undefined;
     const buildLabel = (wizData.cfb2h as string) || undefined;

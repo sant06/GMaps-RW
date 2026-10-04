@@ -182,6 +182,7 @@ export class MapsVirtualScroller {
           featureId: parsedCoords.featureId,
           userNote,
           isClosed,
+          operationalStatus: isClosed ? 'Permanently closed' : 'Operational',
           extractedAt: new Date().toISOString(),
         };
 
