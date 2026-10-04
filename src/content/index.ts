@@ -1,7 +1,7 @@
 /**
  * Content Script entry point (ISOLATED World).
  * Bridges MAIN world network interception with the Service Worker GMAPS_PIPELINE port,
- * and orchestrates the virtual DOM scroller during hybrid/DOM extractions.
+ * and orchestrates both the virtual DOM scroller and the write/mutation engine.
  */
 
 import { PIPELINE_PORT_NAME } from '../types/messages';
@@ -9,17 +9,31 @@ import type {
   ContentToWorkerMessage,
   WorkerToContentMessage,
   ExtractionOptions,
+  MutationOptions,
+  MutationProgressStats,
 } from '../types/messages';
+import type { MutationItemPayload } from '../types/places';
 import { CrossWorldBridge } from './bridge';
 import { BatchexecuteUnpacker } from '../injected/rpc-unpacker';
 import { MapsVirtualScroller } from './scroller';
+import { RpcMutationBuilder } from '../injected/rpc-mutations';
+import { GoogleMapsUiMutator } from './ui-mutator';
+import { RateLimiter } from '../utils/rate-limiter';
 
 console.log('[Content Script] Initializing Google Maps bidirectional bridge...');
 
 export const bridge = new CrossWorldBridge();
+const uiMutator = new GoogleMapsUiMutator();
+const mutationRateLimiter = new RateLimiter({ minDelayMs: 1200, maxDelayMs: 2500 });
+
 let pipelinePort: chrome.runtime.Port | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let activeScroller: MapsVirtualScroller | null = null;
+
+// Mutation state
+let isMutationPaused = false;
+let isMutationAborted = false;
+let pendingFallbackApprovalResolve: ((approved: boolean) => void) | null = null;
 
 // Track extraction stats
 let extractionStartTime = 0;
@@ -41,7 +55,6 @@ function connectToBackground(): void {
     pipelinePort = chrome.runtime.connect({ name: PIPELINE_PORT_NAME });
     console.log('[Content Script] Connected to Background SW port.');
 
-    // Report active tab status
     const feed = document.querySelector('div[role="feed"]');
     const titleEl = document.querySelector('h1, div[role="heading"]');
     pipelinePort.postMessage({
@@ -88,7 +101,6 @@ bridge.onRpc((payload) => {
   if (places.length > 0) {
     console.log(`[Content Script] Intercepted ${places.length} places from RPC (${payload.rpcId || 'preview'}).`);
 
-    // Feed to active scroller so it doesn't duplicate
     if (activeScroller) {
       activeScroller.addPreHarvested(places);
     }
@@ -104,6 +116,9 @@ bridge.onRpc((payload) => {
   }
 });
 
+// ============================================================================
+// READ ENGINE: EXTRACTION FLOW
+// ============================================================================
 async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
   extractionStartTime = Date.now();
 
@@ -112,7 +127,6 @@ async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
     return;
   }
 
-  // Hybrid or DOM-only: instantiate virtual scroller
   activeScroller = new MapsVirtualScroller();
 
   try {
@@ -122,7 +136,6 @@ async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
       const elapsedSec = (Date.now() - extractionStartTime) / 1000;
       const velocity = elapsedSec > 0 ? stats.count / elapsedSec : 0;
 
-      // Stream newly harvested items
       if (stats.newlyAdded.length > 0) {
         pipelinePort.postMessage({
           type: 'EXTRACTION_STREAM_BATCH',
@@ -134,7 +147,6 @@ async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
         } as ContentToWorkerMessage);
       }
 
-      // Stream progress stats
       pipelinePort.postMessage({
         type: 'EXTRACTION_PROGRESS',
         payload: {
@@ -171,6 +183,183 @@ async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
   }
 }
 
+// ============================================================================
+// WRITE ENGINE: MUTATION & INGESTION QUEUE
+// ============================================================================
+async function startMutationFlow(
+  items: MutationItemPayload[],
+  options: MutationOptions
+): Promise<void> {
+  isMutationPaused = false;
+  isMutationAborted = false;
+
+  const stats: MutationProgressStats = {
+    totalItems: items.length,
+    processedCount: 0,
+    successCount: 0,
+    failureCount: 0,
+    fallbackCount: 0,
+    etaSeconds: null,
+    activeMode: options.mode,
+  };
+
+  const startTime = Date.now();
+
+  for (let i = 0; i < items.length; i++) {
+    if (isMutationAborted) {
+      console.log('[Content Script] Mutation aborted by user.');
+      break;
+    }
+
+    while (isMutationPaused && !isMutationAborted) {
+      await mutationRateLimiter.sleep(500);
+    }
+
+    const item = items[i];
+    stats.currentItemTitle = item.title;
+
+    // Report progress
+    pipelinePort?.postMessage({
+      type: 'MUTATION_PROGRESS',
+      payload: { ...stats },
+    } as ContentToWorkerMessage);
+
+    let succeeded = false;
+
+    // Strategy 1: Attempt Batchexecute RPC mutation
+    if (options.mode === 'rpc_first_with_dom_fallback' || options.mode === 'rpc_only') {
+      try {
+        const payloadObj = RpcMutationBuilder.buildSavePlacePayload(item);
+        const rpcRes = await bridge.executeRpcMutation({
+          endpointUrl: `${window.location.origin}/_/common/batchexecute`,
+          rpcId: payloadObj.rpcId,
+          innerPayload: payloadObj.innerPayload,
+        });
+
+        if (rpcRes.success) {
+          succeeded = true;
+          stats.successCount++;
+          pipelinePort?.postMessage({
+            type: 'MUTATION_ITEM_RESULT',
+            payload: {
+              item,
+              result: {
+                success: true,
+                itemTitle: item.title,
+                targetListId: item.targetListId,
+                methodUsed: 'rpc',
+                timestamp: Date.now(),
+              },
+            },
+          } as ContentToWorkerMessage);
+        } else {
+          throw new Error(rpcRes.error || `RPC rejected with status ${rpcRes.httpStatus}`);
+        }
+      } catch (rpcErr) {
+        const errMsg = rpcErr instanceof Error ? rpcErr.message : String(rpcErr);
+        console.warn(`[Content Script] RPC mutation failed for "${item.title}":`, errMsg);
+
+        if (options.mode === 'rpc_first_with_dom_fallback') {
+          // Architectural decision: Prompt user in Side Panel before DOM fallback
+          pipelinePort?.postMessage({
+            type: 'MUTATION_FALLBACK_PROMPT_REQUIRED',
+            payload: { item, rpcError: errMsg },
+          } as ContentToWorkerMessage);
+
+          const approved = await waitForUserFallbackApproval();
+
+          if (approved) {
+            const fallbackRes = await uiMutator.executeSaveWorkflow(item);
+            if (fallbackRes.success) {
+              succeeded = true;
+              stats.successCount++;
+              stats.fallbackCount++;
+            } else {
+              stats.failureCount++;
+            }
+
+            pipelinePort?.postMessage({
+              type: 'MUTATION_ITEM_RESULT',
+              payload: { item, result: fallbackRes },
+            } as ContentToWorkerMessage);
+          } else {
+            stats.failureCount++;
+            pipelinePort?.postMessage({
+              type: 'MUTATION_ITEM_RESULT',
+              payload: {
+                item,
+                result: {
+                  success: false,
+                  itemTitle: item.title,
+                  targetListId: item.targetListId,
+                  methodUsed: 'rpc',
+                  error: 'Fallback declined by user.',
+                  timestamp: Date.now(),
+                },
+              },
+            } as ContentToWorkerMessage);
+          }
+        } else {
+          // rpc_only mode failed
+          stats.failureCount++;
+          pipelinePort?.postMessage({
+            type: 'MUTATION_ITEM_RESULT',
+            payload: {
+              item,
+              result: {
+                success: false,
+                itemTitle: item.title,
+                targetListId: item.targetListId,
+                methodUsed: 'rpc',
+                error: errMsg,
+                timestamp: Date.now(),
+              },
+            },
+          } as ContentToWorkerMessage);
+        }
+      }
+    } else if (options.mode === 'dom_only') {
+      const fallbackRes = await uiMutator.executeSaveWorkflow(item);
+      if (fallbackRes.success) {
+        succeeded = true;
+        stats.successCount++;
+        stats.fallbackCount++;
+      } else {
+        stats.failureCount++;
+      }
+
+      pipelinePort?.postMessage({
+        type: 'MUTATION_ITEM_RESULT',
+        payload: { item, result: fallbackRes },
+      } as ContentToWorkerMessage);
+    }
+
+    stats.processedCount++;
+
+    // Calculate velocity & ETA
+    const elapsed = (Date.now() - startTime) / 1000;
+    const rate = stats.processedCount / elapsed;
+    const remaining = items.length - stats.processedCount;
+    stats.etaSeconds = rate > 0 ? Math.round(remaining / rate) : null;
+
+    // Apply adaptive jitter delay between mutations
+    if (i < items.length - 1 && succeeded) {
+      await mutationRateLimiter.applyAdaptiveDelay();
+    }
+  }
+
+  pipelinePort?.postMessage({
+    type: 'MUTATION_COMPLETED',
+    payload: { summary: stats },
+  } as ContentToWorkerMessage);
+}
+
+function waitForUserFallbackApproval(): Promise<boolean> {
+  return new Promise((resolve) => {
+    pendingFallbackApprovalResolve = resolve;
+  });
+}
+
 function handleWorkerMessage(msg: WorkerToContentMessage): void {
   switch (msg.type) {
     case 'HEARTBEAT_PONG':
@@ -194,11 +383,30 @@ function handleWorkerMessage(msg: WorkerToContentMessage): void {
       break;
 
     case 'CMD_START_MUTATION':
-      console.log(`[Content Script] Received mutation command for ${msg.payload.items.length} items.`);
+      startMutationFlow(msg.payload.items, msg.payload.options);
       break;
 
     case 'CMD_APPROVE_DOM_FALLBACK':
-      console.log('[Content Script] User approved DOM fallback:', msg.payload.approved);
+      if (pendingFallbackApprovalResolve) {
+        pendingFallbackApprovalResolve(msg.payload.approved);
+        pendingFallbackApprovalResolve = null;
+      }
+      break;
+
+    case 'CMD_PAUSE_MUTATION':
+      isMutationPaused = true;
+      break;
+
+    case 'CMD_RESUME_MUTATION':
+      isMutationPaused = false;
+      break;
+
+    case 'CMD_ABORT_MUTATION':
+      isMutationAborted = true;
+      if (pendingFallbackApprovalResolve) {
+        pendingFallbackApprovalResolve(false);
+        pendingFallbackApprovalResolve = null;
+      }
       break;
   }
 }

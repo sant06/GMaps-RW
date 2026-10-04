@@ -22,7 +22,20 @@
       </div>
     </header>
 
-    <main class="app-main">
+    <!-- Fallback Approval Notification Banner -->
+    <div id="fallback-prompt-banner" class="fallback-banner hidden">
+      <div class="fallback-banner-header">
+        <span class="banner-icon">⚠️</span>
+        <strong>RPC Mutation Rejected</strong>
+      </div>
+      <p id="fallback-prompt-text" class="fallback-banner-text">
+        Google Maps RPC rejected the payload. Would you like to execute the in-page DOM click automation fallback?
+      </p>
+      <div class="fallback-banner-actions">
+        <button id="btn-approve-fallback" class="btn btn-warning">Approve DOM Fallback</button>
+        <button id="btn-reject-fallback" class="btn btn-secondary">Skip Item</button>
+      </div>
+    </div>
       <!-- Session & Tab Info -->
       <section class="card session-card">
         <div class="card-header">

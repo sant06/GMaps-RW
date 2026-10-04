@@ -94,6 +94,49 @@ body {
   background-color: var(--accent-red);
 }
 
+.hidden {
+  display: none !important;
+}
+
+.fallback-banner {
+  background-color: #2e1a05;
+  border: 1px solid var(--accent-amber);
+  border-radius: var(--border-radius);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: fadeIn 0.2s ease-in-out;
+}
+
+.fallback-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-amber);
+  font-size: 13px;
+}
+
+.fallback-banner-text {
+  font-size: 11px;
+  color: #fde68a;
+}
+
+.fallback-banner-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-warning {
+  background-color: var(--accent-amber);
+  color: #1e1b4b;
+  font-weight: 700;
+}
+
+.btn-warning:hover {
+  background-color: #d97706;
+}
+
 .card {
   background-color: var(--bg-secondary);
   border: 1px solid var(--border-color);
