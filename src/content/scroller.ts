@@ -331,8 +331,17 @@ export class MapsVirtualScroller {
   ): Promise<void> {
     if (!this.container) return;
 
+    // 0. Rewind container to top (0px) so virtual recycler mounts from item #1
+    if (this.container.scrollTop > 50) {
+      logCallback?.('info', 'NAV', `Reposicionando al inicio de la lista (scrollTop: ${Math.round(this.container.scrollTop)}px -> 0px)...`);
+      this.container.scrollTop = 0;
+      this.container.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await this.rateLimiter.sleep(700);
+    }
+
+    let lastScrollHeight = this.container.scrollHeight;
     let stagnationCycles = 0;
-    const MAX_STAGNATION_LIMIT = 6;
+    const MAX_STAGNATION_LIMIT = 8;
     let cycle = 0;
 
     while (!this.isAborted) {
@@ -341,7 +350,17 @@ export class MapsVirtualScroller {
         continue;
       }
       cycle++;
-      const initialCount = this.harvestedMap.size;
+
+      // Check if Google Maps dynamically loaded more items (scrollHeight expanded)
+      if (this.container.scrollHeight > lastScrollHeight + 50) {
+        logCallback?.(
+          'info',
+          'LOAD',
+          `Google Maps cargó nuevos elementos en la lista (ScrollHeight: ${this.container.scrollHeight}px). Continuando...`
+        );
+        lastScrollHeight = this.container.scrollHeight;
+        stagnationCycles = 0;
+      }
 
       // 1. Synthesize hover on cards and harvest newly populated anchors
       const newlyAdded = await this.harvestVisibleElements();
@@ -372,25 +391,30 @@ export class MapsVirtualScroller {
         break;
       }
 
+      const isAtBottom = this.container.scrollTop + this.container.clientHeight >= this.container.scrollHeight - 60;
+
       // Sentinel or stagnation termination evaluation
-      if (this.detectTerminalSentinel() || stagnationCycles >= MAX_STAGNATION_LIMIT) {
-        logCallback?.('warn', 'RECOVERY', `Ciclo #${cycle}: Sin nuevos elementos visibles. Ejecutando micro-scroll para re-activar reciclador virtual de Google...`);
-        // Recovery routine: scroll backward slightly to re-trigger Google intersection observers
-        this.performActiveScroll(-350);
+      if (this.detectTerminalSentinel() || (isAtBottom && stagnationCycles >= 3)) {
+        logCallback?.('warn', 'RECOVERY', `Ciclo #${cycle}: Extremo visible alcanzado. Ejecutando micro-scroll para disparar carga de más elementos...`);
+        // Recovery routine: scroll backward slightly then forward to trigger Google intersection observers
+        this.performActiveScroll(-300);
         await this.rateLimiter.sleep(500);
-        this.performActiveScroll(450);
-        await this.rateLimiter.sleep(600);
+        this.performActiveScroll(400);
+        await this.rateLimiter.sleep(800);
 
         const recoveryAdded = await this.harvestVisibleElements();
-        if (recoveryAdded.length > 0) {
+        if (recoveryAdded.length > 0 || this.container.scrollHeight > lastScrollHeight + 50) {
           stagnationCycles = 0;
-          const sample = recoveryAdded.slice(0, 2).map((p) => `"${p.title}"`).join(', ');
-          logCallback?.('info', 'EXTRACT', `Recuperación exitosa: +${recoveryAdded.length} lugares (${sample}). Total: ${this.harvestedMap.size}`);
+          lastScrollHeight = this.container.scrollHeight;
+          if (recoveryAdded.length > 0) {
+            const sample = recoveryAdded.slice(0, 2).map((p) => `"${p.title}"`).join(', ');
+            logCallback?.('info', 'EXTRACT', `Recuperación exitosa: +${recoveryAdded.length} lugares (${sample}). Total: ${this.harvestedMap.size}`);
+          }
           continue;
         }
 
-        if (this.harvestedMap.size === initialCount && stagnationCycles >= MAX_STAGNATION_LIMIT) {
-          logCallback?.('info', 'COMPLETE', `Ciclo #${cycle}: Final de la lista alcanzado tras ${cycle} ciclos.`);
+        if (stagnationCycles >= MAX_STAGNATION_LIMIT) {
+          logCallback?.('info', 'COMPLETE', `Ciclo #${cycle}: Final de la lista alcanzado (${this.harvestedMap.size} lugares extraídos tras ${cycle} ciclos).`);
           break;
         }
       }
@@ -857,6 +881,34 @@ export class MapsVirtualScroller {
       let userNote = noteEl?.textContent?.trim() || undefined;
       if (userNote && (userNote.toLowerCase().startsWith('+ not') || userNote.toLowerCase().startsWith('agregar not'))) {
         userNote = undefined;
+      }
+
+      // Strategy B.1: Check if title itself contains coordinates, e.g. "(-36.495170, -56.691744)"
+      const coordTitleMatch = title.match(/^\(?(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)\)?$/);
+      if (coordTitleMatch) {
+        const titleLat = parseFloat(coordTitleMatch[1]);
+        const titleLng = parseFloat(coordTitleMatch[2]);
+        if (isPlausibleGeoCoordinate(titleLat, titleLng)) {
+          const id = generateSyntheticPlaceId(title, titleLat, titleLng);
+          if (!this.harvestedMap.has(id)) {
+            const record: ScrapedPlaceRecord = {
+              id,
+              title,
+              url: `https://www.google.com/maps/place/?q=${titleLat.toFixed(6)},${titleLng.toFixed(6)}`,
+              latitude: titleLat,
+              longitude: titleLng,
+              isHighPrecision: true,
+              address,
+              userNote,
+              isClosed: false,
+              operationalStatus: 'Operational',
+              extractedAt: new Date().toISOString(),
+            };
+            this.harvestedMap.set(id, record);
+            newlyAdded.push(record);
+            return;
+          }
+        }
       }
 
       // Check if child anchor has coordinates

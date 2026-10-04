@@ -135,6 +135,37 @@ describe('BatchexecuteUnpacker', () => {
     expect(extracted[2].longitude).toBeCloseTo(-73.2459, 4);
   });
 
+  it('ignores rating and review count tuples and extracts real coordinates', () => {
+    const mockBusinessPayload = [
+      'ChIJBodegasLopez1234567890',
+      'Bodegas López Buenos Aires',
+      ['Tienda de vinos'],
+      [4.6, 126], // Rating and review count! Must NOT be taken as coordinates!
+      [null, null, -34.16998, -58.94943], // Real geographic coordinates
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces([mockBusinessPayload]);
+    expect(extracted.length).toBe(1);
+    expect(extracted[0].title).toBe('Bodegas López Buenos Aires');
+    expect(extracted[0].latitude).toBeCloseTo(-34.16998, 4);
+    expect(extracted[0].longitude).toBeCloseTo(-58.94943, 4);
+  });
+
+  it('correctly extracts unnamed dropped pins whose titles are raw coordinates (e.g. Turkmenistan pin)', () => {
+    const mockTurkmenistanPin = [
+      '(40.252596, 58.439703)',
+      'Turkmenistán',
+      [[null, null, 40.252596, 58.439703]],
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces([mockTurkmenistanPin]);
+    expect(extracted.length).toBe(1);
+    expect(extracted[0].title).toBe('(40.252596, 58.439703)');
+    expect(extracted[0].address).toBe('Turkmenistán');
+    expect(extracted[0].latitude).toBeCloseTo(40.252596, 5);
+    expect(extracted[0].longitude).toBeCloseTo(58.439703, 5);
+  });
+
   it('fails gracefully on empty or malformed strings without throwing', () => {
     expect(BatchexecuteUnpacker.unpack('')).toEqual([]);
     expect(BatchexecuteUnpacker.unpack(')]}\'\nrandom non-json garbage')).toEqual([]);

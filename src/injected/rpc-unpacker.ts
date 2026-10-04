@@ -173,6 +173,43 @@ export class BatchexecuteUnpacker {
     if (depth > 5 || !node || typeof node !== 'object') return null;
 
     if (Array.isArray(node)) {
+      // 1. Priority A: Exact 2-element coordinate tuple [lat, lng] or [latE7, lngE7]
+      if (node.length === 2 && typeof node[0] === 'number' && typeof node[1] === 'number') {
+        const n1 = node[0];
+        const n2 = node[1];
+        if (isPlausibleGeoCoordinate(n1, n2)) {
+          return { lat: n1, lng: n2 };
+        }
+        if (Math.abs(n1) > 1000 && isPlausibleGeoCoordinate(n1 / 1e7, n2 / 1e7)) {
+          return { lat: n1 / 1e7, lng: n2 / 1e7 };
+        }
+      }
+
+      // 2. Priority B: Canonical Google Maps protobuf coordinate array [null, null, lat, lng]
+      if (
+        node.length >= 4 &&
+        (node[0] === null || node[0] === undefined) &&
+        (node[1] === null || node[1] === undefined) &&
+        typeof node[2] === 'number' &&
+        typeof node[3] === 'number'
+      ) {
+        if (isPlausibleGeoCoordinate(node[2], node[3])) {
+          return { lat: node[2], lng: node[3] };
+        }
+        if (Math.abs(node[2]) > 1000 && isPlausibleGeoCoordinate(node[2] / 1e7, node[3] / 1e7)) {
+          return { lat: node[2] / 1e7, lng: node[3] / 1e7 };
+        }
+      }
+
+      // 3. Priority C: Check children first (deeper dedicated coordinate arrays win over parent arrays)
+      for (const child of node) {
+        if (child && typeof child === 'object') {
+          const found = BatchexecuteUnpacker.findDeepCoords(child, depth + 1);
+          if (found) return found;
+        }
+      }
+
+      // 4. Fallback: Adjacent numbers in arbitrary arrays
       for (let i = 0; i < node.length - 1; i++) {
         const n1 = node[i];
         const n2 = node[i + 1];
@@ -183,13 +220,6 @@ export class BatchexecuteUnpacker {
           if (Math.abs(n1) > 1000 && isPlausibleGeoCoordinate(n1 / 1e7, n2 / 1e7)) {
             return { lat: n1 / 1e7, lng: n2 / 1e7 };
           }
-        }
-      }
-
-      for (const child of node) {
-        if (child && typeof child === 'object') {
-          const found = BatchexecuteUnpacker.findDeepCoords(child, depth + 1);
-          if (found) return found;
         }
       }
     } else {
@@ -242,9 +272,13 @@ export class BatchexecuteUnpacker {
       if (isLegitimatePlaceTitle(str)) {
         if (!title) {
           title = str;
-        } else if (!address && (str.includes(',') || /\d+/.test(str)) && str !== title) {
-          // If title has a comma but str does not, prefer the shorter clean name as title
-          if (title.includes(',') && !str.includes(',')) {
+        } else if (!address && str !== title) {
+          const titleIsCoord =
+            /^\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?$/.test(title) ||
+            /^\d{1,2}°\d{1,2}'[\d\.]+"?[NS]\s+\d{1,3}°\d{1,2}'[\d\.]+"?[EW]$/i.test(title);
+
+          // If current title is not coordinates, has comma, but str does not, prefer shorter clean name as title
+          if (!titleIsCoord && title.includes(',') && !str.includes(',')) {
             address = title;
             title = str;
           } else {
@@ -261,13 +295,19 @@ export class BatchexecuteUnpacker {
     if (!title) return null;
 
     const effectiveId = placeId || featureId;
+    const isCoordTitle =
+      /^\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?$/.test(title) ||
+      /^\d{1,2}°\d{1,2}'[\d\.]+"?[NS]\s+\d{1,3}°\d{1,2}'[\d\.]+"?[EW]$/i.test(title);
+
     const isDroppedPin =
       title.toLowerCase().includes('pin') ||
       title.toLowerCase().includes('marcador') ||
-      title.toLowerCase().includes('dropped');
+      title.toLowerCase().includes('chincheta') ||
+      title.toLowerCase().includes('dropped') ||
+      isCoordTitle;
 
     // Every authentic place entity MUST have a Place ID (ChIJ...) or Hex Feature ID (0x...),
-    // EXCEPT dropped pins/markers which are identified by their pin title.
+    // EXCEPT dropped pins/markers/raw coordinates which are identified by their pin title.
     if (!effectiveId && !isDroppedPin) {
       return null;
     }

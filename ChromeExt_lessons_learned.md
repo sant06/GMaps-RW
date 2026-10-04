@@ -475,3 +475,48 @@ A pesar de que el usuario tenía en pantalla sus listas visibles ("Mayo24" con 1
 > 4. **Re-resolución Dinámica contra el DOM Activo:**
 >    En aplicaciones web SPA de ciclo de vida reactivo, nunca reutilices referencias a nodos HTML entre transiciones de pantalla. En cada iteración, re-escanea el DOM vivo para obtener referencias a nodos frescos y conectados.
 
+---
+
+## 18. La Trampa de Pines Huérfanos con Coordenadas Crudas, Falso Parseo de Calificaciones [4.6, 126] y Virtualización en Listas Masivas (200+ Lugares)
+
+### Síntoma / Error
+En listas grandes (como **"Sitios destacados"** con *"Más de 200 sitios"*):
+1. **Pérdida masiva de registros en listas largas (Solo 42 de 200+ extraídos):**
+   Si el usuario iniciaba la extracción habiendo hecho scroll hacia abajo previamente (posición `18581px`), el proceso se detenía tras 6 ciclos extrayendo exactamente 42 lugares.
+2. **Falso error de "No se detectaron lugares" al subir al inicio:**
+   Si el usuario subía manualmente al inicio de la lista (`0px`) y relanzaba la extracción, la extensión mostraba inmediatamente el cartel rojo:
+   ```text
+   [EXTRACTION] No se detectaron lugares en la vista actual. Por favor abre tu lista de lugares guardados en Google Maps...
+   ```
+3. **Coordenadas erróneas en comercios (Comercios en medio del océano):**
+   En el archivo Excel exportado, negocios legítimos de Buenos Aires o Mozambique aparecían con coordenadas como `Latitude: 4.6, Longitude: 126` o `Latitude: 4.3, Longitude: 118` (situándolos en el Océano Pacífico).
+
+### Causa Raíz
+1. **Pines Huérfanos con Títulos de Coordenadas Puras:**
+   - Cuando un usuario guarda una chincheta en un punto geográfico sin nombre comercial ni entidad de Google (ej. en el desierto de Turkmenistán cerca del cráter de gas de Darvaza, en Afganistán, o en el océano), Google Maps titula la entidad con las coordenadas crudas entre paréntesis: `(-36.495170, -56.691744)`, `(40.252596, 58.439703)`, etc.
+   - El validador `isLegitimatePlaceTitle` contenía la regla: `if (!/[a-zA-Z]/.test(t)) return false`. Al exigir letras alfabéticas obligatorias, descartaba todos los títulos que fuesen únicamente números, paréntesis y signos negativos.
+   - Al estar ubicados los primeros 6 elementos de la lista con este formato, el scraper concluía que no había ningún lugar legítimo en la vista y abortaba con error.
+   - Asimismo, el extractor RPC exigía que un elemento sin Place ID tuviera en su título palabras como `"pin"` o `"marcador"`, descartando también estos registros a nivel de red.
+2. **Tuplas de Calificación y Conteo de Reseñas tomadas como Coordenadas:**
+   - En la carga Protobuf deserializada de Google Maps, los metadatos de valoración de un comercio se representan como `[rating, reviewCount]`, por ejemplo `[4.6, 126]` (4.6 estrellas, 126 reseñas).
+   - Como 4.6 está entre -90 y 90, 126 está entre -180 y 180, y 4.6 tiene decimales, la función de coordenadas lo aceptaba como un punto geográfico válido antes de inspeccionar el sub-array geométrico real `[null, null, lat, lng]`.
+3. **El Reciclador Virtual (DOM Virtualization) y el Aborto Prematuro de Scroll:**
+   - En listas con más de 200 lugares, Google Maps no mantiene 200 nodos en el DOM. Utiliza un *virtual recycler* que sólo monta ~20 tarjetas a la vez y desmonta las anteriores.
+   - Si la extracción comenzaba con la barra de scroll desplazada, los elementos anteriores ya estaban desmontados.
+   - Además, al llegar al final del bloque actual de 20 elementos, Google Maps tarda entre 1 y 2 segundos en solicitar el siguiente bloque por red y expandir la altura desplazable (`scrollHeight`). El límite de 6 ciclos rápidos (2.7 segundos) abortaba antes de que Google Maps alcanzara a inyectar el nuevo bloque.
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Extracción Resiliente de Listas Masivas y Datos no Convencionales en SPAs**:
+> 1. **Coordenadas Crudas como Títulos Válidos de Entidad:**
+>    Los marcadores creados por el usuario en zonas remotas llevan coordenadas como nombre (`(-36.495170, -56.691744)` o `40°15'09.4"N 58°26'22.9"E`). Todo validador léxico debe permitir explícitamente patrones de coordenadas como títulos válidos y extraer sus valores numéricos directamente del texto.
+> 2. **Inmunidad Estricta ante Tuplas de Calificación (`[rating, reviews]`):**
+>    Toda función de plausibilidad geográfica debe rechazar pares numéricos donde un valor esté en el rango de calificación `[1.0, 5.0]` y el otro sea un número entero `>= 1` representativo de cantidad de opiniones. Asimismo, el buscador de coordenadas en árboles Protobuf debe priorizar sub-arrays dedicados de 2 o 4 elementos (`[lat, lng]`, `[null, null, lat, lng]`) sobre arrays contenedores generales.
+> 3. **Rebobinado Obligatorio al Origen (`scrollTop = 0`):**
+>    Al iniciar un proceso de cosecha en feeds con reciclador virtual, la extensión debe restablecer incondicionalmente `container.scrollTop = 0` para comenzar desde el primer registro y acumular de forma continua cada lote en memoria a medida que avanza.
+> 4. **Detección de Expansión Dinámica de Altura (`scrollHeight`):**
+>    En listas infinitas que cargan datos por lotes bajo demanda:
+>    - Monitorea activamente los aumentos en `scrollHeight`. Si la altura total crece, significa que la SPA acaba de inyectar nuevos registros: reinicia inmediatamente el contador de estancamiento.
+>    - Diferencia entre "estar a mitad de lista sin nuevos elementos visibles" y "estar al fondo físico del scroll". Nunca abortes por inactividad a menos que el scroll esté verdaderamente en el límite inferior (`scrollTop + clientHeight >= scrollHeight - 60`) y tras haber ejecutado rebotes de micro-scroll para reactivar las peticiones de red.
+
+

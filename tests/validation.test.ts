@@ -30,6 +30,14 @@ describe('Validation Heuristics (Anti-Phantom Extraction)', () => {
       expect(isPlausibleGeoCoordinate(10.0, 195.0)).toBe(false);
       expect(isPlausibleGeoCoordinate(NaN, 10.0)).toBe(false);
     });
+
+    it('rejects Google Maps rating and review count tuples ([4.6, 126], [4.3, 118])', () => {
+      expect(isPlausibleGeoCoordinate(4.6, 126)).toBe(false);
+      expect(isPlausibleGeoCoordinate(4.3, 118)).toBe(false);
+      expect(isPlausibleGeoCoordinate(3.6, 133)).toBe(false);
+      expect(isPlausibleGeoCoordinate(4.8, 54)).toBe(false);
+      expect(isPlausibleGeoCoordinate(4.5, 150)).toBe(false);
+    });
   });
 
   describe('isLegitimatePlaceTitle', () => {
@@ -40,6 +48,14 @@ describe('Validation Heuristics (Anti-Phantom Extraction)', () => {
       expect(isLegitimatePlaceTitle('Café Tortoni')).toBe(true);
       expect(isLegitimatePlaceTitle('Parrilla Don Julio')).toBe(true);
       expect(isLegitimatePlaceTitle('Musée d’Orsay')).toBe(true);
+    });
+
+    it('accepts raw coordinate titles for dropped pins and unnamed saved locations', () => {
+      expect(isLegitimatePlaceTitle('(-36.495170, -56.691744)')).toBe(true);
+      expect(isLegitimatePlaceTitle('(40.252596, 58.439703)')).toBe(true);
+      expect(isLegitimatePlaceTitle('(21.037718, 105.834036)')).toBe(true);
+      expect(isLegitimatePlaceTitle('-34.601335, -58.370882')).toBe(true);
+      expect(isLegitimatePlaceTitle('40°15\'09.4"N 58°26\'22.9"E')).toBe(true);
     });
 
     it('rejects user account avatar elements', () => {
