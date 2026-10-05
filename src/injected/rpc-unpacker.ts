@@ -13,11 +13,59 @@ export interface UnpackedRpcPayload {
   extractedPlaces: ScrapedPlaceRecord[];
 }
 
+/**
+ * Merges two scraped place records that share identical geographic coordinates,
+ * preferring cleaner short place titles over long addresses, and preserving notes and IDs.
+ */
+export function mergePlaceRecords(existing: ScrapedPlaceRecord, incoming: ScrapedPlaceRecord): ScrapedPlaceRecord {
+  let bestTitle = existing.title;
+  let bestAddress = existing.address || incoming.address;
+
+  const existingHasComma = existing.title.includes(',');
+  const incomingHasComma = incoming.title.includes(',');
+
+  // If one title is raw coordinates e.g. "(-34.59, -58.44)" and the other has a real name:
+  const isExistingCoord = /^\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?$/.test(existing.title);
+  const isIncomingCoord = /^\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?$/.test(incoming.title);
+
+  if (isExistingCoord && !isIncomingCoord) {
+    bestTitle = incoming.title;
+    bestAddress = incoming.address || existing.address;
+  } else if (!isExistingCoord && isIncomingCoord) {
+    // Keep existing non-coordinate title
+  } else if (existingHasComma && !incomingHasComma && incoming.title.length >= 2) {
+    // Incoming title is cleaner (no comma, not an address) while existing title is an address
+    bestTitle = incoming.title;
+    if (!bestAddress || bestAddress === incoming.title) {
+      bestAddress = existing.title;
+    }
+  } else if (!existingHasComma && incomingHasComma) {
+    if (!bestAddress || bestAddress === existing.title) {
+      bestAddress = incoming.title;
+    }
+  }
+
+  return {
+    ...existing,
+    id: existing.placeId ? existing.id : incoming.placeId ? incoming.id : existing.id,
+    title: bestTitle,
+    address: bestAddress,
+    userNote: existing.userNote || incoming.userNote,
+    placeId: existing.placeId || incoming.placeId,
+    featureId: existing.featureId || incoming.featureId,
+    cid: existing.cid || incoming.cid,
+    listTitle: existing.listTitle || incoming.listTitle,
+    category: existing.category || incoming.category,
+    isHighPrecision: existing.isHighPrecision || incoming.isHighPrecision,
+  };
+}
+
 export class BatchexecuteUnpacker {
   private static readonly XSSI_PREFIX_REGEX = /^\)]\}'\s*\n?/;
 
   /**
-   * Strips anti-XSSI security prefix and parses nested Google JSON envelopes using balanced-token extraction.
+   * Robustly unpacks Batchexecute, streaming RPC, and preview JSON payloads.
+   * Scans for all top-level JSON structures ([...] and {...}) across line-delimited or chunked streams.
    */
   public static unpack(rawBody: string): UnpackedRpcPayload[] {
     if (!rawBody || typeof rawBody !== 'string') return [];
@@ -27,19 +75,35 @@ export class BatchexecuteUnpacker {
 
     const results: UnpackedRpcPayload[] = [];
 
-    // Strategy 1: Balanced delimiter scan for batchexecute envelopes [["wrb.fr", ...]]
-    let searchIdx = 0;
-    while (searchIdx < cleaned.length) {
-      const startIdx = cleaned.indexOf('[["wrb.fr"', searchIdx);
-      if (startIdx === -1) break;
+    // Scan for all top-level JSON structures ([...] or {...}) in the payload
+    let i = 0;
+    while (i < cleaned.length) {
+      const nextArr = cleaned.indexOf('[', i);
+      const nextObj = cleaned.indexOf('{', i);
+
+      let startIdx = -1;
+      let openChar = '[';
+      let closeChar = ']';
+
+      if (nextArr !== -1 && (nextObj === -1 || nextArr < nextObj)) {
+        startIdx = nextArr;
+        openChar = '[';
+        closeChar = ']';
+      } else if (nextObj !== -1) {
+        startIdx = nextObj;
+        openChar = '{';
+        closeChar = '}';
+      } else {
+        break; // No more JSON structures
+      }
 
       let depth = 0;
       let inString = false;
       let escape = false;
       let endIdx = -1;
 
-      for (let i = startIdx; i < cleaned.length; i++) {
-        const char = cleaned[i];
+      for (let j = startIdx; j < cleaned.length; j++) {
+        const char = cleaned[j];
         if (escape) {
           escape = false;
           continue;
@@ -53,11 +117,11 @@ export class BatchexecuteUnpacker {
           continue;
         }
         if (!inString) {
-          if (char === '[') depth++;
-          else if (char === ']') {
+          if (char === openChar) depth++;
+          else if (char === closeChar) {
             depth--;
             if (depth === 0) {
-              endIdx = i + 1;
+              endIdx = j + 1;
               break;
             }
           }
@@ -67,50 +131,45 @@ export class BatchexecuteUnpacker {
       if (endIdx !== -1) {
         const jsonStr = cleaned.slice(startIdx, endIdx);
         try {
-          const parsedEnvelope = JSON.parse(jsonStr) as [string, string, string, ...unknown[]][];
-          for (const item of parsedEnvelope) {
-            if (Array.isArray(item) && item[0] === 'wrb.fr') {
-              const currentRpcId = item[1];
-              const innerPayload = item[2];
-              let innerJson = innerPayload;
-              if (typeof innerPayload === 'string') {
-                try {
-                  innerJson = JSON.parse(innerPayload);
-                } catch {
-                  // Keep as string
+          const parsed = JSON.parse(jsonStr);
+
+          // Check if parsed structure is a wrb.fr batchexecute envelope
+          if (Array.isArray(parsed) && parsed.length > 0 && Array.isArray(parsed[0]) && parsed[0][0] === 'wrb.fr') {
+            for (const item of parsed) {
+              if (Array.isArray(item) && item[0] === 'wrb.fr') {
+                const currentRpcId = item[1];
+                const innerPayload = item[2];
+                let innerJson = innerPayload;
+                if (typeof innerPayload === 'string') {
+                  try {
+                    innerJson = JSON.parse(innerPayload);
+                  } catch {
+                    // Keep as string
+                  }
                 }
+                const places = this.deepExtractPlaces(innerJson);
+                results.push({
+                  rpcId: currentRpcId,
+                  rawJson: innerJson,
+                  extractedPlaces: places,
+                });
               }
-              const places = this.deepExtractPlaces(innerJson);
-              results.push({
-                rpcId: currentRpcId,
-                rawJson: innerJson,
-                extractedPlaces: places,
-              });
             }
+          } else {
+            // Direct JSON chunk (e.g. [[null, ...]] or /maps/preview/ or list chunk)
+            const places = this.deepExtractPlaces(parsed);
+            results.push({
+              rawJson: parsed,
+              extractedPlaces: places,
+            });
           }
         } catch {
           // Ignore chunk parse error
         }
-        searchIdx = endIdx;
+        i = endIdx;
       } else {
-        searchIdx = startIdx + 10;
+        i = startIdx + 1;
       }
-    }
-
-    if (results.length > 0) {
-      return results;
-    }
-
-    // Strategy 2: Direct top-level JSON array (e.g. /maps/preview/ or tbm=map)
-    try {
-      const directJson = JSON.parse(cleaned);
-      const places = this.deepExtractPlaces(directJson);
-      results.push({
-        rawJson: directJson,
-        extractedPlaces: places,
-      });
-    } catch {
-      // Body is not top-level valid JSON
     }
 
     return results;
@@ -118,11 +177,15 @@ export class BatchexecuteUnpacker {
 
   /**
    * Scans an arbitrary nested array structure to locate place records, coordinates, and notes.
+   * Spatially deduplicates places to ensure each geographic location is uniquely represented.
    */
   public static deepExtractPlaces(data: unknown): ScrapedPlaceRecord[] {
-    const places: ScrapedPlaceRecord[] = [];
+    const coordMap = new Map<string, ScrapedPlaceRecord>();
     const visited = new Set<unknown>();
-    const seenPlaceIds = new Set<string>();
+
+    function getCoordKey(lat: number, lng: number): string {
+      return `${lat.toFixed(5)},${lng.toFixed(5)}`;
+    }
 
     function traverse(node: unknown) {
       if (!node) return;
@@ -160,9 +223,15 @@ export class BatchexecuteUnpacker {
 
         // Check if this array represents a place candidate (post-order: most specific entity wins)
         const candidate = BatchexecuteUnpacker.extractPlaceCandidateFromArray(node);
-        if (candidate && !seenPlaceIds.has(candidate.id)) {
-          seenPlaceIds.add(candidate.id);
-          places.push(candidate);
+        if (candidate) {
+          const coordKey = getCoordKey(candidate.latitude, candidate.longitude);
+          const existing = coordMap.get(coordKey);
+          if (existing) {
+            const merged = mergePlaceRecords(existing, candidate);
+            coordMap.set(coordKey, merged);
+          } else {
+            coordMap.set(coordKey, candidate);
+          }
         }
       } else {
         for (const key of Object.keys(node)) {
@@ -172,7 +241,7 @@ export class BatchexecuteUnpacker {
     }
 
     traverse(data);
-    return places;
+    return Array.from(coordMap.values());
   }
 
   /**
@@ -283,13 +352,19 @@ export class BatchexecuteUnpacker {
     );
     if (isListMetadata) return null;
 
-    // If multiple direct children contain coordinate subtrees, this array is a list collection, not an individual place
-    let directChildWithCoordsCount = 0;
-    for (const child of arr) {
-      if (child && typeof child === 'object' && BatchexecuteUnpacker.findDeepCoords(child, 1)) {
-        directChildWithCoordsCount++;
-        if (directChildWithCoordsCount > 1) return null;
-      }
+    // Reject containers that hold multiple place entities (collections)
+    if (strings.length > 12) return null;
+
+    // Reject pegman easter egg skins / assets
+    if (
+      strings.some(
+        (s) =>
+          s.includes('/tactile/') ||
+          s.toLowerCase().includes('pegman') ||
+          /^\d{4}-\d{2}-\d{2}T/.test(s)
+      )
+    ) {
+      return null;
     }
 
     let placeId: string | undefined;

@@ -77,8 +77,17 @@ export function isLegitimatePlaceTitle(title: string | undefined | null): boolea
     'casanova:',
     'SearchResult.',
     '2ahUKE',
+    'CAES',
+    'CAIS',
+    'CAEQ',
+    'CAIQ',
   ];
   if (forbiddenPrefixes.some((p) => t.startsWith(p) || t.toLowerCase().startsWith(p.toLowerCase()))) {
+    return false;
+  }
+
+  // Reject URL data parameter patterns like !10m1!1e1 or !3m1!1e3
+  if (/^!\d+[a-z]\d+!/i.test(t) || /^\d+[a-z]\d+!/i.test(t)) {
     return false;
   }
 
@@ -86,8 +95,8 @@ export function isLegitimatePlaceTitle(title: string | undefined | null): boolea
   const exactForbidden = ['psm', 'gps', 'gsm', 'tipo 2', 'tomacorriente'];
   if (exactForbidden.includes(t.toLowerCase())) return false;
 
-  // Reject ISO dates (e.g., 2027-01-02)
-  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return false;
+  // Reject ISO dates & timestamps (e.g., 2027-01-02, 2015-02-08T08:00:00.000Z, 2026-06-15T05:00:00.000Z)
+  if (/^\d{4}-\d{2}-\d{2}(?:T[\d:\.]+Z?)?$/.test(t)) return false;
 
   // Reject prices (e.g., $ 1.282.963, 150€)
   if (/^[\$€£¥]\s*\d/.test(t) || /^\d+[\.,]\d{2}\s*[\$€£¥]/.test(t)) return false;
@@ -134,8 +143,14 @@ export function isLegitimatePlaceTitle(title: string | undefined | null): boolea
   // Reject ratings (e.g. 4.5, 4,5 estrellas, 4.8 stars)
   if (/^\d([.,]\d)?\s*(estrellas|stars)?$/i.test(t)) return false;
 
-  // Reject internal Google 20-26 char base64-like feature tokens without spaces (e.g. d3fCauWaHYnL1sQPjYam8QM)
-  if (/^[a-zA-Z0-9_-]{20,26}$/.test(t) && !t.includes(' ')) {
+  // Reject internal Google 20-60 char base64-like feature/list tokens without spaces
+  // (e.g. d3fCauWaHYnL1sQPjYam8QM, dtwiDbA3kCGXN9zXNogHTRiK3nccSw, _dZ3G2xCjlm2w9CB3XKYHAteuFrUfA)
+  if (/^[a-zA-Z0-9_-]{20,60}$/.test(t) && !t.includes(' ')) {
+    return false;
+  }
+
+  // Reject internal Google asset paths and pegman easter eggs (e.g. /tactile/pegman_v3/merman/)
+  if (t.includes('/tactile/') || t.toLowerCase().includes('pegman')) {
     return false;
   }
 
@@ -149,7 +164,8 @@ export function isLegitimatePlaceTitle(title: string | undefined | null): boolea
     t.startsWith('/m/') ||
     t.startsWith('/g/') ||
     t.startsWith('/search') ||
-    t.startsWith('/fake_')
+    t.startsWith('/fake_') ||
+    t.startsWith('/tactile')
   ) {
     return false;
   }

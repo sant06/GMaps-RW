@@ -562,5 +562,57 @@ En listas grandes (como **"Sitios destacados"** con *"Más de 200 sitios"*):
 > 4. **Hidratación Activa On-Demand (`queryInitialState`):**
 >    - Al pulsar "Start Extraction", despacha inmediatamente un mensaje al hilo principal (`QUERY_INITIAL_STATE`) para desempaquetar variables globales (`APP_INITIALIZATION_STATE`, `_pageData`, `<script>` embebidos) antes del primer ciclo de scroll, garantizando que listas ya abiertas en pantalla se hidraten al instante en la memoria de la extensión.
 
+---
+
+## 20. Fusión Espacial por Coordenadas, Aislamiento de Caché Inter-Listas, Filtrado de Artefactos Protobuf/Pegman y Desbloqueo de Feeds Virtuales Profundos
+
+### Síntoma / Error
+1. **Registros Duplicados y Títulos Redundantes en Exportaciones:**
+   Lugares idénticos aparecían dos veces en el Excel (ej. una fila con `"Neuquén"` y otra con `"Neuquén, Neuquén Province"`), compartiendo exactamente las mismas coordenadas geográficas pero con IDs sintéticos distintos.
+2. **Artefactos Espurios y Metadatos Internos de Google Maps:**
+   Aparición ocasional de filas con fechas ISO como título (`2015-02-08T08:00:00.000Z`), skins de Street View (`/tactile/pegman_v3/merman/`), o tokens de lista en Base64 (`dtwiDbA3kCGXN9zXNogHTRiK3nccSw`).
+3. **Fuga de Caché Acumulativa entre Listas (Cross-List Cache Leakage):**
+   Al extraer sucesivamente múltiples listas (Lista 1, luego Lista 2, luego Lista 3), la Lista 2 heredaba los 30 lugares de la Lista 1 (generando 46 registros), y la Lista 3 acumulaba los lugares de las dos anteriores.
+4. **Techo de Extracción de ~66 Elementos en Listas de 200+ Lugares:**
+   En listas masivas ("Sitios destacados" con más de 200 sitios declarados), la extensión realizaba scrolls pero se detenía tempranamente tras 6 ciclos, cosechando únicamente 66 lugares en total.
+
+### Causa Raíz
+1. **La Condición de "Múltiples Coordenadas" que Rechazaba Lugares Reales en RPC:**
+   - En el deserializador RPC, existía la regla preventiva `if (directChildWithCoordsCount > 1) return null;` para evitar interpretar contenedores de múltiples lugares como un solo punto.
+   - Sin embargo, en Google Maps las entidades geográficas completas (ciudades, atracciones, comercios) transportan no solo el pin puntual (`[null, null, lat, lng]`), sino también el rectángulo envolvente de la cámara (`[[sw_lat, sw_lng], [ne_lat, ne_lng]]`) y las coordenadas de la cámara de Street View.
+   - Como resultado, el deserializador rechazaba a **todas las entidades reales con geometría completa** (`Lilongüe`, `Isla de Pascua`, etc.) y solo admitía marcadores manuales huérfanos (`dropped pins`).
+2. **Aborto Prematuro al Tocar Fondo en Listas Asíncronas:**
+   - La condición de salida del scroller evaluaba `if (stagnationCycles >= MAX_STAGNATION_LIMIT || (isAtBottom && this.harvestedMap.size > 0)) break;`.
+   - Cuando el scroll llegaba al final del bloque visible actual (los primeros ~20 ítems montados en el DOM), `isAtBottom` se volvía verdadero y `harvestedMap.size > 0` también lo era. Si Google Maps demoraba más de 800 ms en solicitar por red y pintar el siguiente tramo, la extensión abortaba inmediatamente en el ciclo 2 sin darle tiempo a la SPA de cargar los 200 elementos.
+3. **Persistencia Indiscriminada vs. Vaciado Prematuro de Caché RPC:**
+   - Al no asociar los lugares pre-cosechados con un identificador de lista, las peticiones interceptadas en listas anteriores permanecían indefinidamente en memoria.
+   - Por el contrario, vaciar la caché incondicionalmente al pulsar "Start" borraba los datos que Google Maps acababa de cargar por red segundos antes al abrir la lista en pantalla.
+4. **Discrepancia de Nombres en la Misma Posición Geográfica:**
+   - El payload RPC contiene tanto el nombre corto de la entidad como el nombre calificado con provincia/país. Al generar IDs sintéticos a partir de `title + lat + lng`, se creaban dos registros independientes para un único sitio geográfico físico.
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Arquitectura de Fusión Espacial, Aislamiento de Estado y Recolección Profunda en SPAs Complejas**:
+> 1. **Deduplicación Espacial con Fusión Atómica (Spatial Merging & Deduplication):**
+>    - Indexa los lugares en memoria utilizando una clave espacial de 5 decimales (`lat.toFixed(5),lng.toFixed(5)` ~1.1 metros de resolución).
+>    - Si ingresa un nuevo registro cuyas coordenadas coinciden con uno ya existente:
+>      - Conserva el nombre más limpio y conciso como título (ej. prefiere `"Neuquén"` sobre `"Neuquén, Neuquén Province"` si el segundo contiene comas y el primero no).
+>      - Traslada la cadena más detallada al campo `address`.
+>      - Conserva y combina notas de usuario (`userNote`), Place IDs y estados operativos sin duplicar la fila.
+> 2. **Filtro de Artefactos Protobuf, Fechas ISO y Pegman:**
+>    - Bloquea explícitamente en el validador léxico (`isLegitimatePlaceTitle`):
+>      - Tokens alfanuméricos continuos en Base64/Protobuf de 20 a 60 caracteres (`/^[a-zA-Z0-9_-]{20,60}$/`).
+>      - Marcas de tiempo ISO (`/^\d{4}-\d{2}-\d{2}(?:T[\d:\.]+Z?)?$/`).
+>      - Rutas de skins o recursos de Street View (`/tactile/`, `pegman`).
+>      - Prefijos internos de URL de Google Maps (`CAES`, `CAIS`, `CAEQ`, `!\d+[a-z]\d+!`).
+> 3. **Aislamiento de Caché por Huella Digital de Lista (Active List Fingerprint):**
+>    - Calcula la huella única de la lista activa combinando el token de URL (`!2s[token]`) y el título del encabezado (`h1`).
+>    - Solo purga la caché de pre-cosecha RPC (`preHarvestedRpcPlaces.clear()`) cuando la huella cambia (cambio de lista detectado vía `popstate`, `hashchange` o polling de 1s).
+>    - Esto garantiza que los RPCs interceptados al abrir la lista se preserven intactos al iniciar la extracción, eliminando a la vez cualquier fuga de listas previas.
+> 4. **Paciencia Dinámica en Feeds Virtuales Profundos (200+ ítems):**
+>    - En listas con conteo esperado alto o aproximado (`más de 200 sitios`), amplía el margen de estancamiento (hasta 10 ciclos) y nunca abortes simplemente por `isAtBottom && size > 0`.
+>    - Ejecuta micro-rebotes de scroll (subir 350px, esperar 500ms, bajar 450px con eventos `wheel`, esperar 1000ms) para garantizar que los observadores de intersección y listeners de rueda de Google Maps disparen las peticiones de red para los siguientes bloques.
+
+
 
 

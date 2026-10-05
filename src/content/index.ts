@@ -150,6 +150,33 @@ bridge.onAuth((payload) => {
 // In-memory cache of authentic places intercepted from Google Maps list RPCs
 const preHarvestedRpcPlaces = new Map<string, ScrapedPlaceRecord>();
 
+// Active list fingerprint to isolate RPC caches between different lists
+function getActiveListFingerprint(): string {
+  const url = window.location.href;
+  const listTokenMatch = url.match(/!2s([a-zA-Z0-9_-]{20,60})/);
+  const listToken = listTokenMatch ? listTokenMatch[1] : '';
+  const titleEl = document.querySelector('h1, div[role="heading"], .fontHeadlineLarge');
+  const title = titleEl?.textContent?.trim() || '';
+  return `${listToken}::${title}`;
+}
+
+let currentListFingerprint = getActiveListFingerprint();
+
+function checkListSwitch(): void {
+  const newFingerprint = getActiveListFingerprint();
+  if (currentListFingerprint && newFingerprint && newFingerprint !== currentListFingerprint) {
+    console.log(`[Content Script] Switched list from "${currentListFingerprint}" to "${newFingerprint}". Clearing pre-harvest cache.`);
+    preHarvestedRpcPlaces.clear();
+    currentListFingerprint = newFingerprint;
+  } else if (!currentListFingerprint && newFingerprint) {
+    currentListFingerprint = newFingerprint;
+  }
+}
+
+window.addEventListener('popstate', checkListSwitch);
+window.addEventListener('hashchange', checkListSwitch);
+setInterval(checkListSwitch, 1000);
+
 // Forward intercepted Batchexecute RPC payloads to Service Worker
 bridge.onRpc((payload) => {
   const places = BatchexecuteUnpacker.deepExtractPlaces(payload.parsedPayload || []);
@@ -182,6 +209,7 @@ bridge.onRpc((payload) => {
 async function startExtractionFlow(options: ExtractionOptions): Promise<void> {
   extractionStartTime = Date.now();
   isExtractionActive = true;
+  checkListSwitch();
 
   if (options.mode === 'rpc_only') {
     console.log('[Content Script] RPC-only mode active: Listening passively to network streams.');

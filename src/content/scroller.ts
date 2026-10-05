@@ -10,6 +10,7 @@ import { GoogleMapsUrlParser } from './parser';
 import { RateLimiter } from '../utils/rate-limiter';
 import { generateSyntheticPlaceId } from '../utils/crypto';
 import { isLegitimatePlaceTitle, isPlausibleGeoCoordinate } from '../utils/validation';
+import { mergePlaceRecords } from '../injected/rpc-unpacker';
 
 export interface SavedListDirectoryEntry {
   title: string;
@@ -20,10 +21,38 @@ export interface SavedListDirectoryEntry {
 export class MapsVirtualScroller {
   private container: HTMLElement | null = null;
   private harvestedMap: Map<string, ScrapedPlaceRecord> = new Map();
+  private coordIndex: Map<string, string> = new Map();
   private isPaused = false;
   private isAborted = false;
   private rateLimiter: RateLimiter;
   private currentListTitle: string | null = null;
+
+  /**
+   * Spatially deduplicates and merges place records using 5-decimal coordinate keys (~1 meter precision).
+   */
+  private addOrUpdatePlace(record: ScrapedPlaceRecord): boolean {
+    const coordKey = `${record.latitude.toFixed(5)},${record.longitude.toFixed(5)}`;
+    const existingId = this.coordIndex.get(coordKey);
+
+    if (existingId && this.harvestedMap.has(existingId)) {
+      const existing = this.harvestedMap.get(existingId)!;
+      const merged = mergePlaceRecords(existing, record);
+      this.harvestedMap.set(existingId, merged);
+      return false; // Merged with existing record
+    }
+
+    if (this.harvestedMap.has(record.id)) {
+      const existing = this.harvestedMap.get(record.id)!;
+      const merged = mergePlaceRecords(existing, record);
+      this.harvestedMap.set(record.id, merged);
+      this.coordIndex.set(coordKey, record.id);
+      return false; // Merged with existing record
+    }
+
+    this.harvestedMap.set(record.id, record);
+    this.coordIndex.set(coordKey, record.id);
+    return true; // Newly added
+  }
 
   constructor(containerElement?: HTMLElement, rateLimiter?: RateLimiter) {
     this.container = containerElement || this.findPrimaryContainer();
@@ -143,9 +172,7 @@ export class MapsVirtualScroller {
       if (this.currentListTitle && !item.listTitle) {
         item.listTitle = this.currentListTitle;
       }
-      if (!this.harvestedMap.has(item.id)) {
-        this.harvestedMap.set(item.id, item);
-      }
+      this.addOrUpdatePlace(item);
     }
   }
 
@@ -504,10 +531,11 @@ export class MapsVirtualScroller {
       }
 
       const isAtBottom = this.container.scrollTop + this.container.clientHeight >= this.container.scrollHeight - 60;
+      const maxStagnation = expectedCount && this.harvestedMap.size < expectedCount ? 10 : MAX_STAGNATION_LIMIT;
 
       // Sentinel or stagnation termination evaluation
       if (this.detectTerminalSentinel() || (isAtBottom && stagnationCycles >= 2)) {
-        if (expectedCount !== null && expectedCount !== undefined && this.harvestedMap.size >= expectedCount) {
+        if (expectedCount !== null && expectedCount !== undefined && !isApproximate && this.harvestedMap.size >= expectedCount) {
           logCallback?.(
             'info',
             'COMPLETE',
@@ -516,12 +544,16 @@ export class MapsVirtualScroller {
           break;
         }
 
-        logCallback?.('warn', 'RECOVERY', `Ciclo #${cycle}: Extremo visible alcanzado. Ejecutando micro-scroll para disparar carga de más elementos...`);
+        logCallback?.(
+          'warn',
+          'RECOVERY',
+          `Ciclo #${cycle}: Extremo visible alcanzado (${this.harvestedMap.size}${expectedCount ? '/' + expectedCount : ''} lugares). Ejecutando micro-scroll para disparar carga de más elementos...`
+        );
         // Recovery routine: scroll backward slightly then forward to trigger Google intersection observers
-        this.performActiveScroll(-300);
+        this.performActiveScroll(-350);
         await this.rateLimiter.sleep(500);
-        this.performActiveScroll(400);
-        await this.rateLimiter.sleep(800);
+        this.performActiveScroll(450);
+        await this.rateLimiter.sleep(1000);
 
         const recoveryAdded = await this.harvestVisibleElements();
         if (recoveryAdded.length > 0 || this.container.scrollHeight > lastScrollHeight + 50) {
@@ -538,7 +570,7 @@ export class MapsVirtualScroller {
           continue;
         }
 
-        if (stagnationCycles >= MAX_STAGNATION_LIMIT || (isAtBottom && this.harvestedMap.size > 0)) {
+        if (this.detectTerminalSentinel() || stagnationCycles >= maxStagnation) {
           logCallback?.('info', 'COMPLETE', `Ciclo #${cycle}: Final de la lista alcanzado (${this.harvestedMap.size} lugares extraídos tras ${cycle} ciclos).`);
           break;
         }
@@ -949,43 +981,42 @@ export class MapsVirtualScroller {
         parsedCoords.featureId ||
         generateSyntheticPlaceId(title, parsedCoords.latitude, parsedCoords.longitude);
 
-      if (!this.harvestedMap.has(id)) {
-        const cardParent = anchor.closest('div[role="listitem"], div[data-item-id], div[jsaction*="place" i], div[role="article"], div.Nv2PK, div.m6QErb > div') || anchor.parentElement;
-        const noteEl = cardParent?.querySelector('div[data-note], [aria-label*="nota" i], [aria-label*="note" i], span[class*="note" i]');
-        let userNote = noteEl?.textContent?.trim() || undefined;
-        if (userNote && (userNote.toLowerCase().startsWith('+ not') || userNote.toLowerCase().startsWith('agregar not'))) {
-          userNote = undefined;
-        }
+      const cardParent = anchor.closest('div[role="listitem"], div[data-item-id], div[jsaction*="place" i], div[role="article"], div.Nv2PK, div.m6QErb > div') || anchor.parentElement;
+      const noteEl = cardParent?.querySelector('div[data-note], [aria-label*="nota" i], [aria-label*="note" i], span[class*="note" i]');
+      let userNote = noteEl?.textContent?.trim() || undefined;
+      if (userNote && (userNote.toLowerCase().startsWith('+ not') || userNote.toLowerCase().startsWith('agregar not'))) {
+        userNote = undefined;
+      }
 
-        const address = cardParent?.querySelector('.fontBodyMedium, .W4Efsd, .headlineMedium')?.textContent?.trim() || undefined;
+      const address = cardParent?.querySelector('.fontBodyMedium, .W4Efsd, .headlineMedium')?.textContent?.trim() || undefined;
 
-        const cardText = cardParent?.textContent || '';
-        const isClosed =
-          cardText.includes('Permanently closed') ||
-          cardText.includes('Temporarily closed') ||
-          cardText.includes('Cerrado permanentemente') ||
-          cardText.includes('Cerrado temporalmente') ||
-          false;
+      const cardText = cardParent?.textContent || '';
+      const isClosed =
+        cardText.includes('Permanently closed') ||
+        cardText.includes('Temporarily closed') ||
+        cardText.includes('Cerrado permanentemente') ||
+        cardText.includes('Cerrado temporalmente') ||
+        false;
 
-        const record: ScrapedPlaceRecord = {
-          id,
-          title,
-          url,
-          latitude: parsedCoords.latitude,
-          longitude: parsedCoords.longitude,
-          isHighPrecision: parsedCoords.isHighPrecision,
-          placeId: parsedCoords.placeId,
-          featureId: parsedCoords.featureId,
-          cid: parsedCoords.cid,
-          listTitle: this.currentListTitle || undefined,
-          address,
-          userNote,
-          isClosed,
-          operationalStatus: isClosed ? 'Permanently closed' : 'Operational',
-          extractedAt: new Date().toISOString(),
-        };
+      const record: ScrapedPlaceRecord = {
+        id,
+        title,
+        url,
+        latitude: parsedCoords.latitude,
+        longitude: parsedCoords.longitude,
+        isHighPrecision: parsedCoords.isHighPrecision,
+        placeId: parsedCoords.placeId,
+        featureId: parsedCoords.featureId,
+        cid: parsedCoords.cid,
+        listTitle: this.currentListTitle || undefined,
+        address,
+        userNote,
+        isClosed,
+        operationalStatus: isClosed ? 'Permanently closed' : 'Operational',
+        extractedAt: new Date().toISOString(),
+      };
 
-        this.harvestedMap.set(id, record);
+      if (this.addOrUpdatePlace(record)) {
         newlyAdded.push(record);
       }
     });
@@ -1016,25 +1047,24 @@ export class MapsVirtualScroller {
         const titleLng = parseFloat(coordTitleMatch[2]);
         if (isPlausibleGeoCoordinate(titleLat, titleLng)) {
           const id = generateSyntheticPlaceId(title, titleLat, titleLng);
-          if (!this.harvestedMap.has(id)) {
-            const record: ScrapedPlaceRecord = {
-              id,
-              title,
-              url: `https://www.google.com/maps/place/?q=${titleLat.toFixed(6)},${titleLng.toFixed(6)}`,
-              latitude: titleLat,
-              longitude: titleLng,
-              isHighPrecision: true,
-              listTitle: this.currentListTitle || undefined,
-              address,
-              userNote,
-              isClosed: false,
-              operationalStatus: 'Operational',
-              extractedAt: new Date().toISOString(),
-            };
-            this.harvestedMap.set(id, record);
+          const record: ScrapedPlaceRecord = {
+            id,
+            title,
+            url: `https://www.google.com/maps/place/?q=${titleLat.toFixed(6)},${titleLng.toFixed(6)}`,
+            latitude: titleLat,
+            longitude: titleLng,
+            isHighPrecision: true,
+            listTitle: this.currentListTitle || undefined,
+            address,
+            userNote,
+            isClosed: false,
+            operationalStatus: 'Operational',
+            extractedAt: new Date().toISOString(),
+          };
+          if (this.addOrUpdatePlace(record)) {
             newlyAdded.push(record);
-            return;
           }
+          return;
         }
       }
 
@@ -1045,25 +1075,24 @@ export class MapsVirtualScroller {
         const parsed = GoogleMapsUrlParser.parse(url);
         if (parsed && isPlausibleGeoCoordinate(parsed.latitude, parsed.longitude)) {
           const id = parsed.placeId || parsed.featureId || generateSyntheticPlaceId(title, parsed.latitude, parsed.longitude);
-          if (!this.harvestedMap.has(id)) {
-            const record: ScrapedPlaceRecord = {
-              id,
-              title,
-              url,
-              latitude: parsed.latitude,
-              longitude: parsed.longitude,
-              isHighPrecision: parsed.isHighPrecision,
-              placeId: parsed.placeId,
-              featureId: parsed.featureId,
-              listTitle: this.currentListTitle || undefined,
-              address,
-              userNote,
-              extractedAt: new Date().toISOString(),
-            };
-            this.harvestedMap.set(id, record);
+          const record: ScrapedPlaceRecord = {
+            id,
+            title,
+            url,
+            latitude: parsed.latitude,
+            longitude: parsed.longitude,
+            isHighPrecision: parsed.isHighPrecision,
+            placeId: parsed.placeId,
+            featureId: parsed.featureId,
+            listTitle: this.currentListTitle || undefined,
+            address,
+            userNote,
+            extractedAt: new Date().toISOString(),
+          };
+          if (this.addOrUpdatePlace(record)) {
             newlyAdded.push(record);
-            return;
           }
+          return;
         }
       }
 

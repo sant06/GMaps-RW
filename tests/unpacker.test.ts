@@ -204,6 +204,52 @@ describe('BatchexecuteUnpacker', () => {
     expect(extracted[1].longitude).toBeCloseTo(-69.324, 4);
   });
 
+  it('spatially deduplicates records with identical coordinates, merging cleaner names with addresses and notes', () => {
+    const mockDuplicates = [
+      [
+        'CAES1',
+        ['Neuquén', 'Neuquén, Neuquén Province'],
+        null,
+        [-38.951678, -68.059188],
+        'Hermosa ciudad',
+      ],
+      [
+        'CAES2',
+        ['Neuquén, Neuquén Province'],
+        null,
+        [-38.951678, -68.059188],
+      ],
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces(mockDuplicates);
+    expect(extracted.length).toBe(1);
+    expect(extracted[0].title).toBe('Neuquén');
+    expect(extracted[0].address).toBe('Neuquén, Neuquén Province');
+    expect(extracted[0].userNote).toBe('Hermosa ciudad');
+    expect(extracted[0].latitude).toBeCloseTo(-38.951678, 5);
+    expect(extracted[0].longitude).toBeCloseTo(-68.059188, 5);
+  });
+
+  it('rejects Google Maps Pegman easter eggs and internal skin paths', () => {
+    const mockPegman = [
+      [
+        '2015-02-08T08:00:00.000Z',
+        'merman',
+        '/tactile/pegman_v3/merman/',
+        [-33.894113, 151.277414],
+      ],
+      [
+        '2014-04-01T00:00:00.000Z',
+        'area51',
+        '/tactile/pegman_v3/area51/',
+        [36.5262, -116.7102],
+      ],
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces(mockPegman);
+    expect(extracted.length).toBe(0);
+  });
+
   it('fails gracefully on empty or malformed strings without throwing', () => {
     expect(BatchexecuteUnpacker.unpack('')).toEqual([]);
     expect(BatchexecuteUnpacker.unpack(')]}\'\nrandom non-json garbage')).toEqual([]);

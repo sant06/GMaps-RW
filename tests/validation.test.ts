@@ -98,8 +98,10 @@ describe('Validation Heuristics (Anti-Phantom Extraction)', () => {
       expect(isLegitimatePlaceTitle('Asia/Tokyo')).toBe(false);
     });
 
-    it('rejects ISO dates, prices, ratings, and timestamps', () => {
+    it('rejects ISO dates, timestamps, prices, ratings, and time strings', () => {
       expect(isLegitimatePlaceTitle('2027-01-02')).toBe(false);
+      expect(isLegitimatePlaceTitle('2015-02-08T08:00:00.000Z')).toBe(false);
+      expect(isLegitimatePlaceTitle('2026-06-15T05:00:00.000Z')).toBe(false);
       expect(isLegitimatePlaceTitle('$ 1.282.963')).toBe(false);
       expect(isLegitimatePlaceTitle('150€')).toBe(false);
       expect(isLegitimatePlaceTitle('12:00 PM')).toBe(false);
@@ -108,14 +110,17 @@ describe('Validation Heuristics (Anti-Phantom Extraction)', () => {
       expect(isLegitimatePlaceTitle('4.8 stars')).toBe(false);
     });
 
-    it('rejects base64-like internal hashes without spaces', () => {
+    it('rejects base64-like internal hashes and list tokens without spaces', () => {
       expect(isLegitimatePlaceTitle('d3fCauWaHYnL1sQPjYam8QM')).toBe(false);
+      expect(isLegitimatePlaceTitle('dtwiDbA3kCGXN9zXNogHTRiK3nccSw')).toBe(false);
+      expect(isLegitimatePlaceTitle('_dZ3G2xCjlm2w9CB3XKYHAteuFrUfA')).toBe(false);
     });
 
-    it('rejects URLs and internal entity paths', () => {
+    it('rejects URLs, internal entity paths, and pegman easter egg skins', () => {
       expect(isLegitimatePlaceTitle('https://www.google.com')).toBe(false);
       expect(isLegitimatePlaceTitle('/m/042_8')).toBe(false);
       expect(isLegitimatePlaceTitle('/search?q=foo')).toBe(false);
+      expect(isLegitimatePlaceTitle('/tactile/pegman_v3/merman/')).toBe(false);
     });
 
     it('rejects non-string or empty inputs', () => {
