@@ -613,6 +613,49 @@ En listas grandes (como **"Sitios destacados"** con *"Más de 200 sitios"*):
 >    - En listas con conteo esperado alto o aproximado (`más de 200 sitios`), amplía el margen de estancamiento (hasta 10 ciclos) y nunca abortes simplemente por `isAtBottom && size > 0`.
 >    - Ejecuta micro-rebotes de scroll (subir 350px, esperar 500ms, bajar 450px con eventos `wheel`, esperar 1000ms) para garantizar que los observadores de intersección y listeners de rueda de Google Maps disparen las peticiones de red para los siguientes bloques.
 
+---
+
+## 21. La Falacia del Límite de Strings, Extracción de Metadatos de Fotos como Lugares Falsos y Eliminación de Coordenadas Fantasma con Latitud Entera
+
+### Síntoma / Error
+1. **Extracción de Títulos Tecnológicos y Metadatos de Fotos en vez de los Nombres de Lugares:**
+   En listas con lugares ricos (ciudades, comercios, atractivos), la exportación generaba filas tituladas `UGCS_REFERENCE`, `gcid:locality`, `797 fotos`, `launch`, `Street View`, `bizbuilder`, mientras que lugares reales como `"Lilongüe"`, `"Isla de Pascua"`, `"Rikitea"`, `"Adamstown"`, `"Guilin"`, `"São Luís"` no aparecían en el Excel.
+2. **Coordenadas Fantasma con Latitud Entera (`lat: 3.000000`):**
+   Múltiples filas exportadas compartían una latitud fija de `3.000000` combinada con una longitud real (ej. `3.000000, -58.438601`), ubicando comercios de Buenos Aires en medio del Océano Atlántico o la selva de Guyana.
+3. **Omisión de Lugares con Nombre y Supervivencia Exclusiva de Marcadores Huérfanos:**
+   En una lista de más de 200 sitios, la extensión sólo cosechaba 33 marcadores sueltos (`(-34.591749, -58.444644)`) y los 30 artefactos de fotos, descartando los más de 140 lugares nombrados.
+
+### Causa Raíz
+1. **El Filtro Destructivo `strings.length > 12`:**
+   - Para evitar procesar arrays de colecciones, el extractor RPC imponía `if (strings.length > 12) return null`.
+   - Sin embargo, una entidad de lugar completa en Google Maps transporta títulos, direcciones, categorías, URLs de fotos, reseñas, horarios y atribuciones, acumulando fácilmente entre 15 y 45 strings en su subárbol.
+   - Como resultado, el extractor **descartaba al 100% de las entidades reales de lugares**. Únicamente los dropped pins sueltos (que carecen de fotos y reseñas) tenían menos de 12 strings y lograban sobrevivir.
+2. **Travesía hacia Sub-arrays de Fotos:**
+   - Al descartar el nodo padre del lugar real, el recorrido recursivo descendía a sus sub-arrays internos.
+   - El sub-array de metadatos de fotos contenía sólo 4 strings: `['UGCS_REFERENCE', '797 fotos', 'Foto', 'https://...']`. Como 4 $\le$ 12, el extractor creía que era un lugar y tomaba `'UGCS_REFERENCE'` o `'797 fotos'` como el título.
+3. **Emparejamiento de Índices Numéricos Protobuf (`[3, lng]`):**
+   - El buscador de coordenadas contenía un fallback que escaneaba números adyacentes en cualquier array.
+   - En los sub-arrays de fotos, Google Maps almacena `[3, -58.438601]`, donde `3` es un enum de tipo de imagen.
+   - Como `3` cae entre -90 y 90, la validación lo aceptaba como latitud porque sólo rechazaba pares donde *ambos* números fueran enteros.
+4. **Falta de Reconocimiento de Listas vs. Lugares por Distancia Geográfica:**
+   - La distinción entre un array contenedor de lista y un lugar individual debe basarse en la presencia de múltiples hijos con coordenadas geográficas distantes ($> 0.05^\circ$, $> 5$ km), no en un conteo arbitrario de strings.
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Extracción Robusta de Entidades Complejas con Medios Enriquecidos en Protobuf**:
+> 1. **Prohibición Total de Coordenadas con Latitud/Longitud Entera en Grados Decimales:**
+>    - En Google Maps, las coordenadas de pines reales siempre poseen múltiples dígitos decimales (resolución submétrica).
+>    - Todo número entero exacto (1, 2, 3, etc.) en un array Protobuf representa un enum, índice de tipo, o conteo.
+>    - Si `Number.isInteger(lat) || Number.isInteger(lng)`, el par numérico debe ser rechazado inmediatamente (`isPlausibleGeoCoordinate`). Esto erradica al 100% las coordenadas fantasma como `3.000000`.
+> 2. **Eliminación de Límites Artificiales de Longitud de Cadenas (`strings.length`):**
+>    - Las entidades de lugares con fotos y opiniones son ricas en texto. Nunca filtres entidades por tener más de 12 strings.
+>    - Para diferenciar una colección de listas de un lugar individual, comprueba si el array contiene dos o más hijos con coordenadas geográficas distantes ($> 5$ km entre sí).
+> 3. **Filtrado Léxico Infranqueable de Descriptores de Medios:**
+>    - Rechaza categóricamente como título cualquier string que sea o comience por: `UGCS_`, `gcid:`, `GEO_PHOTO`, `IMAGE_ALLEYCAT`, `Street View`, `launch`, `bizbuilder`, `foto`, `fotos`, `photo`, `photos` o conteos `\d+\s*fotos?`.
+> 4. **Aislamiento de Notas de Usuario de Tokens Serializados:**
+>    - Todo valor asignado a `userNote` debe ser texto en lenguaje natural. Descarta strings que contengan `||`, URLs, o hashes alfanuméricos continuos sin espacios de más de 15 caracteres.
+
+
 
 
 

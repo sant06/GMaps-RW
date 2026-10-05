@@ -250,6 +250,43 @@ describe('BatchexecuteUnpacker', () => {
     expect(extracted.length).toBe(0);
   });
 
+  it('correctly unpacks rich places with photo metadata, Street View, and >15 strings without extracting UGCS_REFERENCE or 797 fotos', () => {
+    const mockRichPlacePayload = [
+      'list_item_container',
+      [
+        '0x960a33b2bf884145:0x8797f1cc51376e33',
+        ['Lilongüe', 'Malaui'],
+        null,
+        null,
+        null,
+        [[null, null, -13.983333, 33.783333]],
+        'ChIJLilongwe1234567890',
+        'Capital de Malaui',
+        [
+          ['UGCS_REFERENCE', '797 fotos', 'Foto', 'https://lh5.googleusercontent.com/p/AF1QipN...'],
+          ['IMAGE_ALLEYCAT', 'Street View', 'Teodoro García 2380'],
+        ],
+        'Ciudad fascinante en África',
+        'locality',
+        'political',
+        'geocode',
+        'Malaui',
+        'África',
+        'https://www.google.com/maps/...',
+      ],
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces(mockRichPlacePayload);
+    expect(extracted.length).toBe(1);
+    expect(extracted[0].title).toBe('Lilongüe');
+    expect(extracted[0].address).toBe('Malaui');
+    expect(extracted[0].latitude).toBeCloseTo(-13.983333, 5);
+    expect(extracted[0].longitude).toBeCloseTo(33.783333, 5);
+    expect(extracted[0].placeId).toBe('ChIJLilongwe1234567890');
+    expect(extracted[0].title).not.toContain('UGCS');
+    expect(extracted[0].title).not.toContain('fotos');
+  });
+
   it('fails gracefully on empty or malformed strings without throwing', () => {
     expect(BatchexecuteUnpacker.unpack('')).toEqual([]);
     expect(BatchexecuteUnpacker.unpack(')]}\'\nrandom non-json garbage')).toEqual([]);

@@ -176,6 +176,10 @@ export class MapsVirtualScroller {
     }
   }
 
+  public getHarvestedCount(): number {
+    return this.harvestedMap.size;
+  }
+
   /**
    * Executes multi-modal active scrolling to guarantee that Google Maps virtual
    * observers, wheel listeners, and layout recyclers fire deterministically.

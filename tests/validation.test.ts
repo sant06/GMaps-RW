@@ -10,12 +10,14 @@ describe('Validation Heuristics (Anti-Phantom Extraction)', () => {
       expect(isPlausibleGeoCoordinate(-33.8568, 151.2153)).toBe(true);
     });
 
-    it('rejects protobuf integer enums and UI dimensions ([6, 7], [1, 2], [81, 84])', () => {
+    it('rejects protobuf integer enums and UI dimensions ([6, 7], [1, 2], [81, 84], [3, -58.4386])', () => {
       expect(isPlausibleGeoCoordinate(6, 7)).toBe(false);
       expect(isPlausibleGeoCoordinate(1, 2)).toBe(false);
       expect(isPlausibleGeoCoordinate(81, 84)).toBe(false);
       expect(isPlausibleGeoCoordinate(32, 84)).toBe(false);
       expect(isPlausibleGeoCoordinate(74, 84)).toBe(false);
+      expect(isPlausibleGeoCoordinate(3, -58.4386)).toBe(false);
+      expect(isPlausibleGeoCoordinate(-34.6024, 3)).toBe(false);
     });
 
     it('rejects near-zero null island offsets and microscopic protobuf deltas', () => {
@@ -63,11 +65,19 @@ describe('Validation Heuristics (Anti-Phantom Extraction)', () => {
       expect(isLegitimatePlaceTitle('Google Account: John Doe')).toBe(false);
     });
 
-    it('rejects Google internal Protobuf and telemetry tags', () => {
+    it('rejects Google internal Protobuf, photo metadata, and telemetry tags', () => {
       expect(isLegitimatePlaceTitle('psm')).toBe(false);
       expect(isLegitimatePlaceTitle('gps')).toBe(false);
       expect(isLegitimatePlaceTitle('tipo 2')).toBe(false);
       expect(isLegitimatePlaceTitle('tomacorriente')).toBe(false);
+      expect(isLegitimatePlaceTitle('UGCS_REFERENCE')).toBe(false);
+      expect(isLegitimatePlaceTitle('gcid:locality')).toBe(false);
+      expect(isLegitimatePlaceTitle('797 fotos')).toBe(false);
+      expect(isLegitimatePlaceTitle('2219 fotos')).toBe(false);
+      expect(isLegitimatePlaceTitle('Street View')).toBe(false);
+      expect(isLegitimatePlaceTitle('launch')).toBe(false);
+      expect(isLegitimatePlaceTitle('bizbuilder')).toBe(false);
+      expect(isLegitimatePlaceTitle('CIHM0ogKEICAgIDKmpG4dg||')).toBe(false);
       expect(isLegitimatePlaceTitle('photos:AHX2f3...')).toBe(false);
       expect(isLegitimatePlaceTitle('bizbuilder:entry1')).toBe(false);
       expect(isLegitimatePlaceTitle('casanova:asset9')).toBe(false);

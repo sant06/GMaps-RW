@@ -191,12 +191,22 @@ bridge.onRpc((payload) => {
     }
 
     if (pipelinePort && isExtractionActive) {
+      const currentCount = activeScroller ? activeScroller.getHarvestedCount() : preHarvestedRpcPlaces.size;
+      pipelinePort.postMessage({
+        type: 'EXTRACTION_ACTION_LOG',
+        payload: {
+          level: 'info',
+          tag: 'RPC',
+          message: `Interceptados +${places.length} lugares desde la red (${payload.rpcId || 'batchexecute'}). Total acumulado: ${currentCount}`,
+        },
+      } as ContentToWorkerMessage);
+
       pipelinePort.postMessage({
         type: 'EXTRACTION_STREAM_BATCH',
         payload: {
           items: places,
           isTerminalBatch: false,
-          totalHarvestedSoFar: places.length,
+          totalHarvestedSoFar: currentCount,
         },
       } as ContentToWorkerMessage);
     }

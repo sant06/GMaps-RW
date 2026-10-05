@@ -13,8 +13,10 @@ import { isValidCoordinate } from './coordinates';
 export function isPlausibleGeoCoordinate(latitude: number, longitude: number): boolean {
   if (!isValidCoordinate(latitude, longitude)) return false;
 
-  // 1. Reject pure integer pairs (Google Maps Protobuf enum/ratio pairs like [6, 7], [1, 2], [81, 84], [32, 84], [74, 84])
-  if (Number.isInteger(latitude) && Number.isInteger(longitude)) {
+  // 1. Reject if either coordinate is an exact integer (e.g. [3, -58.4386], [6, 7], [1, 2], [81, 84], [4.6, 126])
+  // Genuine Google Maps place pin coordinates always have fractional decimal digits (e.g. -34.602448).
+  // Integer numbers in protobuf arrays represent enums, photo counts, review counts, status codes, or ratios.
+  if (Number.isInteger(latitude) || Number.isInteger(longitude)) {
     return false;
   }
 
@@ -25,15 +27,6 @@ export function isPlausibleGeoCoordinate(latitude: number, longitude: number): b
 
   // 3. Reject if either coordinate is exactly zero while the other is small
   if ((latitude === 0 && Math.abs(longitude) < 1) || (longitude === 0 && Math.abs(latitude) < 1)) {
-    return false;
-  }
-
-  // 4. Reject Google Maps Rating and Review count tuples (e.g. [4.6, 126], [4.3, 118], [3.6, 133])
-  // where one number is a star rating (1.0 to 5.0) and the other is an integer review count (>= 1)
-  if (
-    (latitude >= 1.0 && latitude <= 5.0 && Number.isInteger(longitude) && longitude >= 1) ||
-    (longitude >= 1.0 && longitude <= 5.0 && Number.isInteger(latitude) && latitude >= 1)
-  ) {
     return false;
   }
 
@@ -70,10 +63,39 @@ export function isLegitimatePlaceTitle(title: string | undefined | null): boolea
     return false;
   }
 
+  // Reject strings containing "||" (Protobuf serialization separators)
+  if (t.includes('||')) {
+    return false;
+  }
+
+  // Exact matches on internal protobuf tokens, photo labels, and UI action triggers
+  const exactForbidden = [
+    'ugcs_reference',
+    'geo_photo_reference',
+    'image_alleycat',
+    'street view',
+    'bizbuilder',
+    'launch',
+    'foto',
+    'fotos',
+    'photo',
+    'photos',
+    'psm',
+    'gps',
+    'gsm',
+    'tipo 2',
+    'tomacorriente',
+  ];
+  if (exactForbidden.includes(t.toLowerCase())) return false;
+
+  // Reject photo count strings like "797 fotos", "2219 fotos", "45 photos"
+  if (/^\d+\s*(?:fotos?|photos?)$/i.test(t)) return false;
+
   // Reject internal Google asset, telemetry, and logging tags
   const forbiddenPrefixes = [
     'photos:',
     'bizbuilder:',
+    'bizbuilder',
     'casanova:',
     'SearchResult.',
     '2ahUKE',
@@ -81,8 +103,12 @@ export function isLegitimatePlaceTitle(title: string | undefined | null): boolea
     'CAIS',
     'CAEQ',
     'CAIQ',
+    'gcid:',
+    'ugcs_',
+    'geo_photo',
+    'image_alleycat',
   ];
-  if (forbiddenPrefixes.some((p) => t.startsWith(p) || t.toLowerCase().startsWith(p.toLowerCase()))) {
+  if (forbiddenPrefixes.some((p) => t.toLowerCase().startsWith(p.toLowerCase()))) {
     return false;
   }
 
@@ -90,10 +116,6 @@ export function isLegitimatePlaceTitle(title: string | undefined | null): boolea
   if (/^!\d+[a-z]\d+!/i.test(t) || /^\d+[a-z]\d+!/i.test(t)) {
     return false;
   }
-
-  // Exact matches on internal protobuf tokens
-  const exactForbidden = ['psm', 'gps', 'gsm', 'tipo 2', 'tomacorriente'];
-  if (exactForbidden.includes(t.toLowerCase())) return false;
 
   // Reject ISO dates & timestamps (e.g., 2027-01-02, 2015-02-08T08:00:00.000Z, 2026-06-15T05:00:00.000Z)
   if (/^\d{4}-\d{2}-\d{2}(?:T[\d:\.]+Z?)?$/.test(t)) return false;

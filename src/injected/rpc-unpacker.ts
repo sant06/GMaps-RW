@@ -221,7 +221,6 @@ export class BatchexecuteUnpacker {
           traverse(child);
         }
 
-        // Check if this array represents a place candidate (post-order: most specific entity wins)
         const candidate = BatchexecuteUnpacker.extractPlaceCandidateFromArray(node);
         if (candidate) {
           const coordKey = getCoordKey(candidate.latitude, candidate.longitude);
@@ -295,25 +294,11 @@ export class BatchexecuteUnpacker {
         }
       }
 
-      // 3. Priority C: Check children first (deeper dedicated coordinate arrays win over parent arrays)
+      // 3. Priority C: Check children (deeper dedicated coordinate arrays win over parent arrays)
       for (const child of node) {
         if (child && typeof child === 'object') {
           const found = BatchexecuteUnpacker.findDeepCoords(child, depth + 1);
           if (found) return found;
-        }
-      }
-
-      // 4. Fallback: Adjacent numbers in arbitrary arrays
-      for (let i = 0; i < node.length - 1; i++) {
-        const n1 = node[i];
-        const n2 = node[i + 1];
-        if (typeof n1 === 'number' && typeof n2 === 'number') {
-          if (isPlausibleGeoCoordinate(n1, n2)) {
-            return { lat: n1, lng: n2 };
-          }
-          if (Math.abs(n1) > 1000 && isPlausibleGeoCoordinate(n1 / 1e7, n2 / 1e7)) {
-            return { lat: n1 / 1e7, lng: n2 / 1e7 };
-          }
         }
       }
     } else {
@@ -334,6 +319,42 @@ export class BatchexecuteUnpacker {
   private static extractPlaceCandidateFromArray(arr: unknown[]): ScrapedPlaceRecord | null {
     if (arr.length < 2) return null;
 
+    // Reject list container arrays that describe lists rather than single places
+    const directStrings = arr.filter((x): x is string => typeof x === 'string');
+    const isListMetadata = directStrings.some(
+      (s) =>
+        /\b\d+\s*(?:sitios?|places?|lugares?|items?|elementos?)\b/i.test(s) ||
+        /^(?:compartida|privada|shared|private|pública|public)$/i.test(s)
+    );
+    if (isListMetadata) return null;
+
+    // Check if this array is a list collection containing multiple place child arrays
+    let distinctCoordCount = 0;
+    let firstFoundLat: number | null = null;
+    let firstFoundLng: number | null = null;
+
+    for (const item of arr) {
+      if (item && typeof item === 'object') {
+        const itemCoords = BatchexecuteUnpacker.findDeepCoords(item);
+        if (itemCoords) {
+          if (firstFoundLat === null) {
+            firstFoundLat = itemCoords.lat;
+            firstFoundLng = itemCoords.lng;
+            distinctCoordCount++;
+          } else {
+            const dLat = Math.abs(itemCoords.lat - firstFoundLat);
+            const dLng = Math.abs(itemCoords.lng - (firstFoundLng || 0));
+            if (dLat > 0.05 || dLng > 0.05) {
+              distinctCoordCount++;
+              if (distinctCoordCount >= 2) {
+                return null; // It's a collection containing multiple distinct places!
+              }
+            }
+          }
+        }
+      }
+    }
+
     // Scan for coordinates in this subtree
     const coords = BatchexecuteUnpacker.findDeepCoords(arr);
     if (!coords || !isPlausibleGeoCoordinate(coords.lat, coords.lng)) {
@@ -343,17 +364,6 @@ export class BatchexecuteUnpacker {
     // Collect all strings in this subtree (depth <= 4)
     const strings = BatchexecuteUnpacker.collectStrings(arr);
     if (strings.length === 0) return null;
-
-    // Reject list container arrays that describe lists rather than single places
-    const isListMetadata = strings.some(
-      (s) =>
-        /\b\d+\s*(?:sitios?|places?|lugares?|items?|elementos?)\b/i.test(s) ||
-        /^(?:compartida|privada|shared|private|pública|public)$/i.test(s)
-    );
-    if (isListMetadata) return null;
-
-    // Reject containers that hold multiple place entities (collections)
-    if (strings.length > 12) return null;
 
     // Reject pegman easter egg skins / assets
     if (
@@ -401,8 +411,15 @@ export class BatchexecuteUnpacker {
           } else {
             address = str;
           }
-        } else if (!userNote && str !== title && str !== address && str.length > 2) {
-          if (!str.toLowerCase().startsWith('+ not') && !str.toLowerCase().startsWith('agregar not')) {
+        } else if (!userNote && str !== title && str !== address && str.length >= 3) {
+          const isInternalToken =
+            str.includes('||') ||
+            str.includes('IMAGE_ALLEYCAT') ||
+            str.includes('GEO_PHOTO') ||
+            str.toLowerCase().startsWith('http') ||
+            (/^[a-zA-Z0-9_\-\|\=]{15,}$/.test(str) && !str.includes(' '));
+
+          if (!isInternalToken && !str.toLowerCase().startsWith('+ not') && !str.toLowerCase().startsWith('agregar not')) {
             userNote = str;
           }
         }
