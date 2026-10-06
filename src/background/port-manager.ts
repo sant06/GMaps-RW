@@ -148,8 +148,15 @@ export class PortManager {
         });
         break;
 
-      case 'EXTRACTION_COMPLETED':
+      case 'EXTRACTION_COMPLETED': {
         await StateManager.updatePipelineStatus('completed');
+        if (msg.payload.items && msg.payload.items.length > 0) {
+          const total = await StateManager.appendHarvestedPlaces(msg.payload.items);
+          this.sendToSidePanel({
+            type: 'ITEMS_HARVESTED_UPDATE',
+            payload: { newlyAdded: msg.payload.items, totalCount: total },
+          });
+        }
         this.sendToSidePanel({
           type: 'OPERATION_FINISHED',
           payload: {
@@ -160,6 +167,7 @@ export class PortManager {
         });
         await this.broadcastStateSnapshot();
         break;
+      }
 
       case 'EXTRACTION_ERROR':
         await StateManager.updatePipelineStatus('error');

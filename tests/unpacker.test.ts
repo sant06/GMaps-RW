@@ -287,6 +287,53 @@ describe('BatchexecuteUnpacker', () => {
     expect(extracted[0].title).not.toContain('fotos');
   });
 
+  it('correctly unpacks rich places with wide viewport bounding boxes (>0.05 deg spread) without rejecting them as collections', () => {
+    const mockCityWithWideBoundingBox = [
+      'entity_container',
+      [
+        '0x960a33b2bf884145:0x8797f1cc51376e33',
+        ['Lilongüe', 'Malaui'],
+        null,
+        null,
+        null,
+        [[null, null, -13.983333, 33.783333]], // Exact canonical pin
+        'ChIJLilongwe1234567890',
+        'Capital de Malaui',
+        // Viewport bounding box spanning 0.3 degrees (~33km wide)
+        [
+          [-14.15, 33.65],
+          [-13.85, 33.95],
+        ],
+      ],
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces(mockCityWithWideBoundingBox);
+    expect(extracted.length).toBe(1);
+    expect(extracted[0].title).toBe('Lilongüe');
+    expect(extracted[0].latitude).toBeCloseTo(-13.983333, 5);
+    expect(extracted[0].longitude).toBeCloseTo(33.783333, 5);
+  });
+
+  it('ignores internal 11-char photo/feature tokens (e.g. 5XdUApWbscM) and selects the genuine place title', () => {
+    const mockPlaceWithPhotoToken = [
+      'entity_container',
+      [
+        '0x960a123:0x456',
+        ['5XdUApWbscM', 'Kuala Lumpur', 'Malasia'],
+        null,
+        [[null, null, 3.156948, 101.712303]],
+        'ChIJKualaLumpur1234567',
+      ],
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces(mockPlaceWithPhotoToken);
+    expect(extracted.length).toBe(1);
+    expect(extracted[0].title).toBe('Kuala Lumpur');
+    expect(extracted[0].title).not.toBe('5XdUApWbscM');
+    expect(extracted[0].latitude).toBeCloseTo(3.156948, 5);
+    expect(extracted[0].longitude).toBeCloseTo(101.712303, 5);
+  });
+
   it('fails gracefully on empty or malformed strings without throwing', () => {
     expect(BatchexecuteUnpacker.unpack('')).toEqual([]);
     expect(BatchexecuteUnpacker.unpack(')]}\'\nrandom non-json garbage')).toEqual([]);

@@ -25,10 +25,12 @@ import { BatchexecuteUnpacker } from './rpc-unpacker';
   console.log('[Interceptor MAIN] Successfully mounted in host MAIN execution context.');
 
   const TARGET_ENDPOINTS = [
-    '/maps/preview/',
+    '/maps/preview',
+    'preview',
     'tbm=map',
     'batchexecute',
-    '/maps/rpc/',
+    '/maps/rpc',
+    'rpc',
     '/search?tbm=map',
     'userplaces',
     'entity',
@@ -37,6 +39,9 @@ import { BatchexecuteUnpacker } from './rpc-unpacker';
     'placelist',
     'lookup',
     'list',
+    'starred',
+    'saved',
+    'place',
   ];
 
   // PostMessage dispatch helper
@@ -66,7 +71,13 @@ import { BatchexecuteUnpacker } from './rpc-unpacker';
   function inspectInitialAppState(): void {
     try {
       const win = window as unknown as Record<string, unknown>;
-      const candidates = [win.APP_INITIALIZATION_STATE, win._pageData, win._];
+      const candidates = [
+        win.APP_INITIALIZATION_STATE,
+        win._pageData,
+        win.APP_OPTIONS,
+        win.WIZ_global_data,
+        win._,
+      ];
       for (const candidate of candidates) {
         if (candidate) {
           const places = BatchexecuteUnpacker.deepExtractPlaces(candidate);

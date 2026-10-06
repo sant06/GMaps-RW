@@ -631,7 +631,7 @@ export class MapsVirtualScroller {
    */
   public scanSavedListsInHub(): SavedListDirectoryEntry[] {
     const entries: SavedListDirectoryEntry[] = [];
-    const countRegex = /\b(\d+)\s*(?:sitios?|places?|lugares?|locais|local|lieux?|orte?|luoghi?|luogo|items?|elementos?)\b/i;
+    const countRegex = /(?:más\s+de\s+|more\s+than\s+|plus\s+de\s+|[>+~]\s*)?(\d+)\s*(?:\+\s*)?(?:sitios?|places?|lugares?|locais|local|lieux?|orte?|luoghi?|luogo|items?|elementos?)\b/i;
 
     const countAllOccurrences = (str: string): number => {
       const matches = str.match(new RegExp(countRegex.source, 'gi'));
@@ -639,13 +639,67 @@ export class MapsVirtualScroller {
     };
 
     const container = document.querySelector<HTMLElement>('div.m6QErb, #pane, div[role="main"]') || document.body;
-    const candidates = Array.from(
+
+    const allInteractive = Array.from(
       container.querySelectorAll<HTMLElement>(
-        'div.m6QErb > div, div[role="button"], div[jsaction*="click"], a[href*="placelist"], div.fontHeadlineSmall, div.qBF1Pd'
+        'button, div[role="button"], a[href], div.m6QErb > div, div[jsaction*="click"], div.fontHeadlineSmall, div.qBF1Pd, div[role="article"], div[data-item-id]'
       )
     );
 
-    for (const el of candidates) {
+    // 1. Explicit search for predefined Google Maps system lists
+    // ("Sitios destacados" / Starred, "Favoritos" / Favorites, "Quiero ir" / Want to go, "Planes de viaje" / Travel plans)
+    const KNOWN_SYSTEM_LISTS = [
+      {
+        canonicalName: 'Sitios destacados',
+        aliases: ['sitios destacados', 'lugares destacados', 'starred places', 'starred'],
+        defaultCount: 200,
+      },
+      {
+        canonicalName: 'Favoritos',
+        aliases: ['favoritos', 'favorites'],
+        defaultCount: 0,
+      },
+      {
+        canonicalName: 'Quiero ir',
+        aliases: ['quiero ir', 'want to go'],
+        defaultCount: 0,
+      },
+      {
+        canonicalName: 'Planes de viaje',
+        aliases: ['planes de viaje', 'travel plans'],
+        defaultCount: 0,
+      },
+    ];
+
+    for (const sysList of KNOWN_SYSTEM_LISTS) {
+      for (const el of allInteractive) {
+        const text = (el.innerText || el.textContent || '').toLowerCase();
+        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+        const matchesName = sysList.aliases.some((alias) => text.includes(alias) || aria.includes(alias));
+
+        if (matchesName) {
+          const cardEl = el.closest<HTMLElement>('button, div[role="button"], a[href], div.m6QErb > div') || el;
+          const cardText = cardEl.innerText || cardEl.textContent || '';
+          const countMatch = cardText.match(countRegex);
+          let count = countMatch ? parseInt(countMatch[1], 10) : sysList.defaultCount;
+          if (/\b0\s*(?:sitios?|places?|lugares?)\b/i.test(cardText)) {
+            count = 0;
+          }
+
+          if (!entries.some((e) => e.title.toLowerCase() === sysList.canonicalName.toLowerCase())) {
+            entries.push({
+              title: sysList.canonicalName,
+              itemCount: count,
+              element: cardEl,
+            });
+          }
+          break;
+        }
+      }
+    }
+
+    // 2. Scan custom user-created lists in the hub
+    for (const el of allInteractive) {
       const text = el.innerText || el.textContent || '';
       const countMatch = text.match(countRegex);
       if (!countMatch) continue;
@@ -656,7 +710,6 @@ export class MapsVirtualScroller {
 
       const parentText = el.parentElement ? el.parentElement.innerText || el.parentElement.textContent || '' : '';
       const totalCountsInParent = countAllOccurrences(parentText);
-      // The individual row's parent container typically has multiple counts (or is the pane)
       if (totalCountsInParent === 1 && el.clientHeight > 180) {
         continue; // Skip tall parent wrapper
       }
@@ -732,7 +785,7 @@ export class MapsVirtualScroller {
       clickCandidates.push(anchor);
     }
 
-    const buttonEl = card.querySelector<HTMLElement>('div[role="button"]');
+    const buttonEl = card.querySelector<HTMLElement>('button, div[role="button"]');
     if (buttonEl && !isMenuButton(buttonEl)) {
       clickCandidates.push(buttonEl);
     }
@@ -771,7 +824,7 @@ export class MapsVirtualScroller {
           /añadir un sitio|add a place|agregar un sitio/i.test(b.getAttribute('aria-label') || b.textContent || '')
         );
         const hasBack = document.querySelector<HTMLElement>(
-          'button[aria-label*="Atrás" i], button[aria-label*="Back" i], button[aria-label*="Volver" i]'
+          'button[aria-label*="Atrás" i], button[aria-label*="Back" i], button[aria-label*="Volver" i], button[aria-label*="Buscar en Google Maps" i]'
         );
         const hasNotes = document.querySelectorAll('button[aria-label*="nota" i], [aria-label*="note" i]').length > 0;
         if (hasAddPlace || hasBack || hasNotes || !this.isSavedListsHub()) {
@@ -792,9 +845,11 @@ export class MapsVirtualScroller {
       'button[aria-label*="Atrás" i]',
       'button[aria-label*="Volver" i]',
       'button[aria-label*="Back" i]',
+      'button[aria-label*="Buscar en Google Maps" i]',
       'button[data-tooltip*="Atrás" i]',
       'button[data-tooltip*="Back" i]',
       'button[jsaction*="back" i]',
+      'button.w8IvDg',
     ];
 
     for (const sel of backSelectors) {
@@ -1088,6 +1143,93 @@ export class MapsVirtualScroller {
             isHighPrecision: parsed.isHighPrecision,
             placeId: parsed.placeId,
             featureId: parsed.featureId,
+            listTitle: this.currentListTitle || undefined,
+            address,
+            userNote,
+            extractedAt: new Date().toISOString(),
+          };
+          if (this.addOrUpdatePlace(record)) {
+            newlyAdded.push(record);
+          }
+          return;
+        }
+      }
+
+      // Strategy B.2: Check data attributes of card and its elements for coordinates
+      const checkElements = [
+        card,
+        ...Array.from(card.querySelectorAll<HTMLElement>('[data-lat], [data-item-id], [jsdata], [jsaction], [data-cid], [data-fid]')),
+      ];
+      for (const el of checkElements) {
+        const latAttr = el.getAttribute('data-lat');
+        const lngAttr = el.getAttribute('data-lng');
+        if (latAttr && lngAttr) {
+          const lat = parseFloat(latAttr);
+          const lng = parseFloat(lngAttr);
+          if (isPlausibleGeoCoordinate(lat, lng)) {
+            const id = el.getAttribute('data-item-id') || generateSyntheticPlaceId(title, lat, lng);
+            const record: ScrapedPlaceRecord = {
+              id,
+              title,
+              url: `https://www.google.com/maps/place/?q=${lat.toFixed(6)},${lng.toFixed(6)}`,
+              latitude: lat,
+              longitude: lng,
+              isHighPrecision: true,
+              listTitle: this.currentListTitle || undefined,
+              address,
+              userNote,
+              extractedAt: new Date().toISOString(),
+            };
+            if (this.addOrUpdatePlace(record)) {
+              newlyAdded.push(record);
+            }
+            return;
+          }
+        }
+
+        const dataItemId = el.getAttribute('data-item-id') || el.getAttribute('jsdata') || '';
+        const geoMatch =
+          dataItemId.match(/geo:(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/) ||
+          dataItemId.match(/!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/) ||
+          dataItemId.match(/@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/);
+        if (geoMatch) {
+          const lat = parseFloat(geoMatch[1]);
+          const lng = parseFloat(geoMatch[2]);
+          if (isPlausibleGeoCoordinate(lat, lng)) {
+            const id = el.getAttribute('data-item-id') || generateSyntheticPlaceId(title, lat, lng);
+            const record: ScrapedPlaceRecord = {
+              id,
+              title,
+              url: `https://www.google.com/maps/place/?q=${lat.toFixed(6)},${lng.toFixed(6)}`,
+              latitude: lat,
+              longitude: lng,
+              isHighPrecision: true,
+              listTitle: this.currentListTitle || undefined,
+              address,
+              userNote,
+              extractedAt: new Date().toISOString(),
+            };
+            if (this.addOrUpdatePlace(record)) {
+              newlyAdded.push(record);
+            }
+            return;
+          }
+        }
+      }
+
+      // Strategy B.3: Check thumbnail image URL for embedded coordinate parameters
+      const thumbnailImg = card.querySelector<HTMLImageElement>('img[src*="google"], img[src*="maps"]');
+      if (thumbnailImg?.src) {
+        const parsedImg = GoogleMapsUrlParser.parse(thumbnailImg.src);
+        if (parsedImg && isPlausibleGeoCoordinate(parsedImg.latitude, parsedImg.longitude)) {
+          const id = parsedImg.placeId || generateSyntheticPlaceId(title, parsedImg.latitude, parsedImg.longitude);
+          const record: ScrapedPlaceRecord = {
+            id,
+            title,
+            url: `https://www.google.com/maps/place/?q=${parsedImg.latitude.toFixed(6)},${parsedImg.longitude.toFixed(6)}`,
+            latitude: parsedImg.latitude,
+            longitude: parsedImg.longitude,
+            isHighPrecision: parsedImg.isHighPrecision,
             listTitle: this.currentListTitle || undefined,
             address,
             userNote,

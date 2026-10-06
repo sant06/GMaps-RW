@@ -165,10 +165,21 @@ export function isLegitimatePlaceTitle(title: string | undefined | null): boolea
   // Reject ratings (e.g. 4.5, 4,5 estrellas, 4.8 stars)
   if (/^\d([.,]\d)?\s*(estrellas|stars)?$/i.test(t)) return false;
 
-  // Reject internal Google 20-60 char base64-like feature/list tokens without spaces
-  // (e.g. d3fCauWaHYnL1sQPjYam8QM, dtwiDbA3kCGXN9zXNogHTRiK3nccSw, _dZ3G2xCjlm2w9CB3XKYHAteuFrUfA)
-  if (/^[a-zA-Z0-9_-]{20,60}$/.test(t) && !t.includes(' ')) {
-    return false;
+  // Reject internal Google 8-60 char base64-like photo, feature, or list tokens without spaces
+  // (e.g. 5XdUApWbscM, p_Bc38opygI, yfDguqJglQs, d3fCauWaHYnL1sQPjYam8QM, dtwiDbA3kCGXN9zXNogHTRiK3nccSw)
+  if (/^[a-zA-Z0-9_-]{8,60}$/.test(t) && !t.includes(' ')) {
+    // If it contains digits or underscores/hyphens, it is an internal hash/token, not a real place name
+    if (/[\d_-]/.test(t)) {
+      return false;
+    }
+    // If it contains unnatural mixed case (like yfDguqJglQs) and is not a regular capitalized word (e.g. "Singapore", "Vietnam")
+    if (/[a-z]/.test(t) && /[A-Z]/.test(t) && !/^[A-Z][a-z]+$/.test(t)) {
+      return false;
+    }
+    // Unconditionally reject any single token >= 20 characters
+    if (t.length >= 20) {
+      return false;
+    }
   }
 
   // Reject internal Google asset paths and pegman easter eggs (e.g. /tactile/pegman_v3/merman/)

@@ -16,8 +16,18 @@ Este documento recopila los incidentes, errores y discrepancias encontrados dura
 8. [Auto-Apertura y Heurística de Enrutamiento en SPAs Complejas](#8-auto-apertura-y-heurística-de-enrutamiento-en-spas-complejas)
 9. [Ciclo de Vida Epímero del Service Worker (Heartbeats y Puertos)](#9-ciclo-de-vida-epímero-del-service-worker-heartbeats-y-puertos)
 10. [Sintetización de Eventos de Puntero/Hover en SPAs con Enlaces 'Lazy' (Evitar Nudges Manuales del Usuario)](#10-sintetización-de-eventos-de-punterohover-en-spas-con-enlaces-lazy-evitar-nudges-manuales-del-usuario)
-11. [La Trampa de los Timers en el Service Worker (setInterval no previene la suspensión en MV3)](#11-la-trampa-de-los-timers-en-el-service-worker-setinterval-no-previene-la-suspensión-en-mv3)
+11. [La Trampa de los Timers en el Service Worker (`setInterval` no previene la suspensión en MV3)](#11-la-trampa-de-los-timers-en-el-service-worker-setinterval-no-previene-la-suspensión-en-mv3)
 12. [Invalidación de Contexto de Extensión en Pestañas Previas tras Recargar (Extension Context Invalidated)](#12-invalidación-de-contexto-de-extensión-en-pestañas-previas-tras-recargar-extension-context-invalidated)
+13. [Heurísticas de Validación Estricta para Cargas Útiles Protobuf/RPC y Filtrado de Contaminación del DOM en SPAs](#13-heurísticas-de-validación-estricta-para-cargas-útiles-protobufrpc-y-filtrado-de-contaminación-del-dom-en-spas)
+14. [Heurísticas de Detección Falsa de Contenedores y Distinción entre Vista de Mapa Canvas (WebGL) vs. Vista de Lista (DOM)](#14-heurísticas-de-detección-falsa-de-contenedores-y-distinción-entre-vista-de-mapa-canvas-webgl-vs-vista-de-lista-dom)
+15. [Hidratación Accesible por Foco Teclado (`a11y focusin`) como Bypass Determinístico a Eventos Sintéticos `isTrusted: false`](#15-hidratación-accesible-por-foco-teclado-a11y-focusin-como-bypass-determinístico-a-eventos-sintéticos-istrusted-false)
+16. [Discrepancias Estructurales de DOM entre Feeds de Búsqueda y Listas Personalizadas (Placelists), la Trampa de Altura en Listas Cortas y Desempaquetado Post-Order de Protobuf](#16-discrepancias-estructurales-de-dom-entre-feeds-de-búsqueda-y-listas-personalizadas-placelists-la-trampa-de-altura-en-listas-cortas-y-desempaquetado-post-order-de-protobuf)
+17. [Detección y Navegación Autónoma entre el Directorio de Guardados (Hub de Listas) y las Listas Individuales en Google Maps](#17-detección-y-navegación-autónoma-entre-el-directorio-de-guardados-hub-de-listas-y-las-listas-individuales-en-google-maps)
+18. [La Trampa de Pines Huérfanos con Coordenadas Crudas, Falso Parseo de Calificaciones [4.6, 126] y Virtualización en Listas Masivas (200+ Lugares)](#18-la-trampa-de-pines-huérfanos-con-coordenadas-crudas-falso-parseo-de-calificaciones-46-126-y-virtualización-en-listas-masivas-200-lugares)
+19. [Compuerta de Término Temprano por Conteo de Cabecera, Navegación Autónoma Inter-Listas y Desempaquetado de Placelists Personalizadas sin ChIJ](#19-compuerta-de-término-temprano-por-conteo-de-cabecera-navegación-autónoma-inter-listas-y-desempaquetado-de-placelists-personalizadas-sin-chij)
+20. [Fusión Espacial por Coordenadas, Aislamiento de Caché Inter-Listas, Filtrado de Artefactos Protobuf/Pegman y Desbloqueo de Feeds Virtuales Profundos](#20-fusión-espacial-por-coordenadas-aislamiento-de-caché-inter-listas-filtrado-de-artefactos-protobufpegman-y-desbloqueo-de-feeds-virtuales-profundos)
+21. [La Falacia del Límite de Strings, Extracción de Metadatos de Fotos como Lugares Falsos y Eliminación de Coordenadas Fantasma con Latitud Entera](#21-la-falacia-del-límite-de-strings-extracción-de-metadatos-de-fotos-como-lugares-falsos-y-eliminación-de-coordenadas-fantasma-con-latitud-entera)
+22. [Bounding Boxes como Colecciones Falsas, Fuga de Tokens Fotográficos de 11 Caracteres y Detección de Listas del Sistema en el Hub](#22-bounding-boxes-como-colecciones-falsas-fuga-de-tokens-fotográficos-de-11-caracteres-y-detección-de-listas-del-sistema-en-el-hub)
 
 ---
 
@@ -655,7 +665,44 @@ En listas grandes (como **"Sitios destacados"** con *"Más de 200 sitios"*):
 > 4. **Aislamiento de Notas de Usuario de Tokens Serializados:**
 >    - Todo valor asignado a `userNote` debe ser texto en lenguaje natural. Descarta strings que contengan `||`, URLs, o hashes alfanuméricos continuos sin espacios de más de 15 caracteres.
 
+---
 
+## 22. Bounding Boxes como Colecciones Falsas, Fuga de Tokens Fotográficos de 11 Caracteres y Detección de Listas del Sistema en el Hub
 
+### Síntoma / Error
+1. **Omisión de Lugares con Nombre Propio en Listas Masivas ("Sitios destacados"):**
+   Al extraer listas extensas (>200 elementos), la extensión únicamente capturaba 33 a 39 registros, compuestos casi exclusivamente por marcadores huérfanos con coordenadas crudas como `(-34.591749, -58.444644)` o nombres genéricos. Entidades geográficas reconocidas (ciudades, islas, comunas como *"Lilongüe"*, *"Isla de Pascua"*, *"Cartago"*, *"Rikitea"*) eran completamente omitidas del resultado.
+2. **Fuga de Tokens Fotográficos Base64 como Títulos de Lugares:**
+   En ciertos registros aparecían títulos ininteligibles como `5XdUApWbscM`, `p_Bc38opygI` o `yfDguqJglQs` en lugar del nombre real de la ubicación.
+3. **Falla de Reconocimiento Autónomo de Listas del Sistema en el Hub de Guardados:**
+   Al presionar "Extraer Todas las Listas" o "Iniciar" desde el menú general, el crawler del Hub no detectaba automáticamente la lista "Sitios destacados", requiriendo que el usuario hiciera clic manual en la lista dentro de Google Maps.
+4. **Discrepancia Crítica entre el Log de Auditoría y el Archivo Exportado (.xlsx):**
+   El log de la extensión reportaba haber cosechado 33 o 39 lugares, pero al presionar el botón de exportación a Excel, el archivo descargado contenía únicamente 5 filas.
 
+### Causa Raíz
+1. **La Trampa del Bounding Box Geográfico (`dLat > 0.05`):**
+   - En las respuestas RPC Protobuf de Google Maps, toda entidad geográfica de área (ciudades, provincias, islas, reservas naturales) incluye tanto su coordenada central de marcador `[null, null, lat, lng]` como su caja delimitadora de visualización (viewport bounding box) `[[sw_lat, sw_lng], [ne_lat, ne_lng]]`.
+   - Para evitar tratar un array de múltiples lugares como un lugar individual, el extractor RPC comprobaba la dispersión de coordenadas en el array y descartaba cualquier nodo donde `dLat > 0.05` (~5.5 km).
+   - Dado que una ciudad, isla o territorio abarca de $0.1^\circ$ a $20^\circ$ (10 a 2,200 km), **el filtro descartaba sistemáticamente el 100% de las entidades geográficas nombradas**, permitiendo únicamente la supervivencia de pines huérfanos sin polígono de visualización.
+2. **Brecha de Longitud en el Filtro de Tokens Base64:**
+   - Los identificadores internos de recursos multimedia y fotos de Google consisten en hashes Base64 URL-safe de 11 caracteres (ej. `5XdUApWbscM`, `p_Bc38opygI`).
+   - La heurística léxica anterior solo descartaba cadenas continuas de longitud $\ge 20$, permitiendo que estos identificadores de fotos eludieran la validación y fueran adoptados como títulos de lugares.
+3. **Nodos `<button>` y Parámetros URL No Convencionales en Listas Nativas:**
+   - En el Hub de Guardados (`/maps/@.../data=!3m1!1e3!4m2!10m1!1e1`), las listas del sistema (*Sitios destacados*, *Favoritos*, *Quiero ir*) se renderizan frecuentemente como elementos `<button>` nativos o bloques con etiquetas tipo `"Más de 200 sitios"` y parámetros como `11m1!3e4`, en lugar de enlaces convencionales `<a href="...placelist...">`.
+   - El escáner del Hub buscaba exclusivamente `div[role="button"]` y `a[href*="placelist"]`, ignorando los `<button>` del sistema.
+4. **Desconexión entre el Cierre de Cosecha y el Estado en Memoria del Background Worker:**
+   - Al dispararse `EXTRACTION_COMPLETED`, los lugares recolectados eran devueltos en el payload final hacia el content script, pero el Background `port-manager.ts` no los inyectaba en `StateManager.appendHarvestedPlaces()`. Si el usuario descargaba el archivo mientras el primer ciclo solo había acumulado 5 lugares en memoria, la exportación se generaba con esa instantánea desactualizada.
 
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Extracción de Entidades Geográficas Jerárquicas y Sincronización Fiel de Estado**:
+> 1. **Detección Estructural vs. Métrica de Colecciones:**
+>    - Nunca asumas que un objeto o array es una lista o colección basándote únicamente en la distancia o dispersión entre sus coordenadas internas (`dLat > 0.05`). Las entidades geográficas individuales (ciudades, parques, archipiélagos) tienen extensiones espaciales inmensas.
+>    - Para determinar si un array es una colección de lugares independientes, evalúa su estructura: comprueba si contiene 2 o más nodos hijos que posean cada uno un título de lugar autónomo y legítimo.
+> 2. **Prioridad Canónica del Marcador de Google Maps:**
+>    - En los arrays Protobuf de Google Maps, el marcador de ubicación puntual sigue el patrón canónico `[null, null, lat, lng]`. Este patrón debe tener prioridad absoluta al extraer coordenadas, evitando que los vértices suroeste/noreste del viewport bounding box secuestren la posición del pin.
+> 3. **Filtrado Léxico por Entropía Base64 para Identificadores Opacos:**
+>    - Los hashes de recursos (fotos, thumbnails) suelen tener entre 8 y 60 caracteres y exhiben patrones de Base64 (mezcla de mayúsculas, minúsculas, números y guiones/subrayados sin espacios).
+>    - Todo token mono-palabra que contenga dígitos y letras mezcladas sin puntuación gramatical ni palabras en diccionario debe ser descalificado como título de lugar.
+> 4. **Garantía Atómica de Persistencia en el Cierre de Extracción:**
+>    - En arquitecturas distribuidas de extensiones de navegador (Content Script $\leftrightarrow$ Background Service Worker $\leftrightarrow$ Side Panel), el evento de finalización (`EXTRACTION_COMPLETED`) debe sincronizar atómicamente la lista final completa en el almacén de estado central (`StateManager`) y notificar inmediatamente a la UI con `ITEMS_HARVESTED_UPDATE` antes de permitir cualquier operación de exportación.

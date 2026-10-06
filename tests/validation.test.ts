@@ -120,10 +120,22 @@ describe('Validation Heuristics (Anti-Phantom Extraction)', () => {
       expect(isLegitimatePlaceTitle('4.8 stars')).toBe(false);
     });
 
-    it('rejects base64-like internal hashes and list tokens without spaces', () => {
+    it('rejects base64-like internal hashes, photo IDs, and list tokens without spaces', () => {
       expect(isLegitimatePlaceTitle('d3fCauWaHYnL1sQPjYam8QM')).toBe(false);
       expect(isLegitimatePlaceTitle('dtwiDbA3kCGXN9zXNogHTRiK3nccSw')).toBe(false);
       expect(isLegitimatePlaceTitle('_dZ3G2xCjlm2w9CB3XKYHAteuFrUfA')).toBe(false);
+      // 11-char Google photo / media tokens
+      expect(isLegitimatePlaceTitle('5XdUApWbscM')).toBe(false);
+      expect(isLegitimatePlaceTitle('p_Bc38opygI')).toBe(false);
+      expect(isLegitimatePlaceTitle('yfDguqJglQs')).toBe(false);
+      // But accepts authentic single-word place and country names
+      expect(isLegitimatePlaceTitle('Singapur')).toBe(true);
+      expect(isLegitimatePlaceTitle('Vietnam')).toBe(true);
+      expect(isLegitimatePlaceTitle('Malaui')).toBe(true);
+      expect(isLegitimatePlaceTitle('Lilongüe')).toBe(true);
+      expect(isLegitimatePlaceTitle('Rikitea')).toBe(true);
+      expect(isLegitimatePlaceTitle('Adamstown')).toBe(true);
+      expect(isLegitimatePlaceTitle('Turkmenistán')).toBe(true);
     });
 
     it('rejects URLs, internal entity paths, and pegman easter egg skins', () => {

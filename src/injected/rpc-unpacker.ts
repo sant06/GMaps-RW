@@ -263,22 +263,10 @@ export class BatchexecuteUnpacker {
    * Recursively scans for coordinates [lat, lng], [null, null, lat, lng], E7, or coordinate objects up to depth 5.
    */
   private static findDeepCoords(node: unknown, depth = 0): { lat: number; lng: number } | null {
-    if (depth > 5 || !node || typeof node !== 'object') return null;
+    if (depth > 6 || !node || typeof node !== 'object') return null;
 
     if (Array.isArray(node)) {
-      // 1. Priority A: Exact 2-element coordinate tuple [lat, lng] or [latE7, lngE7]
-      if (node.length === 2 && typeof node[0] === 'number' && typeof node[1] === 'number') {
-        const n1 = node[0];
-        const n2 = node[1];
-        if (isPlausibleGeoCoordinate(n1, n2)) {
-          return { lat: n1, lng: n2 };
-        }
-        if (Math.abs(n1) > 1000 && isPlausibleGeoCoordinate(n1 / 1e7, n2 / 1e7)) {
-          return { lat: n1 / 1e7, lng: n2 / 1e7 };
-        }
-      }
-
-      // 2. Priority B: Canonical Google Maps protobuf coordinate array [null, null, lat, lng]
+      // 1. Priority A: Canonical Google Maps protobuf coordinate array [null, null, lat, lng]
       if (
         node.length >= 4 &&
         (node[0] === null || node[0] === undefined) &&
@@ -294,7 +282,39 @@ export class BatchexecuteUnpacker {
         }
       }
 
-      // 3. Priority C: Check children (deeper dedicated coordinate arrays win over parent arrays)
+      // Check immediate child arrays first for canonical [null, null, lat, lng] pin markers
+      for (const child of node) {
+        if (child && Array.isArray(child)) {
+          if (
+            child.length >= 4 &&
+            (child[0] === null || child[0] === undefined) &&
+            (child[1] === null || child[1] === undefined) &&
+            typeof child[2] === 'number' &&
+            typeof child[3] === 'number'
+          ) {
+            if (isPlausibleGeoCoordinate(child[2], child[3])) {
+              return { lat: child[2], lng: child[3] };
+            }
+            if (Math.abs(child[2]) > 1000 && isPlausibleGeoCoordinate(child[2] / 1e7, child[3] / 1e7)) {
+              return { lat: child[2] / 1e7, lng: child[3] / 1e7 };
+            }
+          }
+        }
+      }
+
+      // 2. Priority B: Exact 2-element coordinate tuple [lat, lng] or [latE7, lngE7]
+      if (node.length === 2 && typeof node[0] === 'number' && typeof node[1] === 'number') {
+        const n1 = node[0];
+        const n2 = node[1];
+        if (isPlausibleGeoCoordinate(n1, n2)) {
+          return { lat: n1, lng: n2 };
+        }
+        if (Math.abs(n1) > 1000 && isPlausibleGeoCoordinate(n1 / 1e7, n2 / 1e7)) {
+          return { lat: n1 / 1e7, lng: n2 / 1e7 };
+        }
+      }
+
+      // 3. Priority C: Check children recursively
       for (const child of node) {
         if (child && typeof child === 'object') {
           const found = BatchexecuteUnpacker.findDeepCoords(child, depth + 1);
@@ -328,28 +348,21 @@ export class BatchexecuteUnpacker {
     );
     if (isListMetadata) return null;
 
-    // Check if this array is a list collection containing multiple place child arrays
-    let distinctCoordCount = 0;
-    let firstFoundLat: number | null = null;
-    let firstFoundLng: number | null = null;
-
+    // Check if this array is a list collection containing multiple distinct child place entities.
+    // In a collection array, multiple child arrays each contain their own independent place title.
+    let childTitleCount = 0;
+    const seenTitles = new Set<string>();
     for (const item of arr) {
-      if (item && typeof item === 'object') {
-        const itemCoords = BatchexecuteUnpacker.findDeepCoords(item);
-        if (itemCoords) {
-          if (firstFoundLat === null) {
-            firstFoundLat = itemCoords.lat;
-            firstFoundLng = itemCoords.lng;
-            distinctCoordCount++;
-          } else {
-            const dLat = Math.abs(itemCoords.lat - firstFoundLat);
-            const dLng = Math.abs(itemCoords.lng - (firstFoundLng || 0));
-            if (dLat > 0.05 || dLng > 0.05) {
-              distinctCoordCount++;
-              if (distinctCoordCount >= 2) {
-                return null; // It's a collection containing multiple distinct places!
-              }
-            }
+      if (Array.isArray(item)) {
+        const itemStrings = BatchexecuteUnpacker.collectStrings(item, 0, []);
+        const validTitle = itemStrings.find(
+          (s) => isLegitimatePlaceTitle(s) && !s.includes('||') && !s.toLowerCase().startsWith('http')
+        );
+        if (validTitle && !seenTitles.has(validTitle.toLowerCase())) {
+          seenTitles.add(validTitle.toLowerCase());
+          childTitleCount++;
+          if (childTitleCount >= 2) {
+            return null; // This array contains multiple distinct place entities (it is a collection)
           }
         }
       }
@@ -404,7 +417,6 @@ export class BatchexecuteUnpacker {
             /^\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?$/.test(title) ||
             /^\d{1,2}°\d{1,2}'[\d\.]+"?[NS]\s+\d{1,3}°\d{1,2}'[\d\.]+"?[EW]$/i.test(title);
 
-          // If current title is not coordinates, has comma, but str does not, prefer shorter clean name as title
           if (!titleIsCoord && title.includes(',') && !str.includes(',')) {
             address = title;
             title = str;
