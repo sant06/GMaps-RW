@@ -33,6 +33,25 @@ export function mergePlaceRecords(existing: ScrapedPlaceRecord, incoming: Scrape
     bestAddress = incoming.address || existing.address;
   } else if (!isExistingCoord && isIncomingCoord) {
     // Keep existing non-coordinate title
+    if (!bestAddress || bestAddress === existing.title) {
+      bestAddress = incoming.address || existing.address;
+    }
+  } else if (
+    existing.title.toLowerCase().includes(incoming.title.toLowerCase()) &&
+    incoming.title.length < existing.title.length &&
+    incoming.title.length >= 3
+  ) {
+    // Incoming is a cleaner substring (e.g. "Teodoro García 2380" inside "Teodoro García 2380, C1426...")
+    bestTitle = incoming.title;
+    bestAddress = existing.title;
+  } else if (
+    incoming.title.toLowerCase().includes(existing.title.toLowerCase()) &&
+    existing.title.length < incoming.title.length &&
+    existing.title.length >= 3
+  ) {
+    // Existing is a cleaner substring
+    bestTitle = existing.title;
+    bestAddress = incoming.title;
   } else if (existingHasComma && !incomingHasComma && incoming.title.length >= 2) {
     // Incoming title is cleaner (no comma, not an address) while existing title is an address
     bestTitle = incoming.title;
@@ -405,25 +424,39 @@ export class BatchexecuteUnpacker {
       }
     }
 
+    const isCoordinateString = (s: string) =>
+      /^\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?$/.test(s.trim()) ||
+      /^\d{1,2}°\d{1,2}'[\d\.]+"?[NS]\s+\d{1,3}°\d{1,2}'[\d\.]+"?[EW]$/i.test(s.trim());
+
+    const cleanCoordPrefix = (s: string) =>
+      s.replace(/^\(?\s*-?\d{1,3}\.\d+[\s,]+-?\d{1,3}\.\d+\s*\)?\s*/, '').trim();
+
     // 2. Identify Title, Address, and User Note
     for (const str of strings) {
       if (str === placeId || str === featureId) continue;
 
-      if (isLegitimatePlaceTitle(str)) {
-        if (!title) {
-          title = str;
-        } else if (!address && str !== title) {
-          const titleIsCoord =
-            /^\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?$/.test(title) ||
-            /^\d{1,2}°\d{1,2}'[\d\.]+"?[NS]\s+\d{1,3}°\d{1,2}'[\d\.]+"?[EW]$/i.test(title);
+      // Check if string contains coordinates prefix (e.g. "(40.252596, 58.439703)Turkmenistán" -> "Turkmenistán")
+      const cleaned = cleanCoordPrefix(str);
+      const effectiveCandidate = cleaned.length >= 2 && isLegitimatePlaceTitle(cleaned) ? cleaned : str;
 
-          if (!titleIsCoord && title.includes(',') && !str.includes(',')) {
+      if (isLegitimatePlaceTitle(effectiveCandidate)) {
+        if (!title) {
+          title = effectiveCandidate;
+        } else if (isCoordinateString(title) && !isCoordinateString(effectiveCandidate)) {
+          // If current title is raw coordinates and we found a real geographic entity name, promote it!
+          if (!address) address = title;
+          title = effectiveCandidate;
+        } else if (!address && effectiveCandidate !== title) {
+          const titleIsCoord = isCoordinateString(title);
+
+          if (!titleIsCoord && title.includes(',') && !effectiveCandidate.includes(',')) {
             address = title;
-            title = str;
+            title = effectiveCandidate;
           } else {
-            address = str;
+            address = effectiveCandidate;
           }
-        } else if (!userNote && str !== title && str !== address && str.length >= 3) {
+        } else if (!userNote && effectiveCandidate !== title && effectiveCandidate !== address && str.length >= 3) {
+          const isGooglePinLabel = /^\(?\s*-?\d{1,3}\.\d+[\s,]+-?\d{1,3}\.\d+/.test(str);
           const isInternalToken =
             str.includes('||') ||
             str.includes('IMAGE_ALLEYCAT') ||
@@ -431,7 +464,7 @@ export class BatchexecuteUnpacker {
             str.toLowerCase().startsWith('http') ||
             (/^[a-zA-Z0-9_\-\|\=]{15,}$/.test(str) && !str.includes(' '));
 
-          if (!isInternalToken && !str.toLowerCase().startsWith('+ not') && !str.toLowerCase().startsWith('agregar not')) {
+          if (!isGooglePinLabel && !isInternalToken && !str.toLowerCase().startsWith('+ not') && !str.toLowerCase().startsWith('agregar not')) {
             userNote = str;
           }
         }

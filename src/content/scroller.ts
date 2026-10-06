@@ -5,11 +5,12 @@
  * and executes multi-modal active scrolling with zero manual nudges required.
  */
 
-import type { ScrapedPlaceRecord } from '../types/places';
+import type { ScrapedPlaceRecord, RawSpatialDedupLogEntry, RawDomCardSnapshot } from '../types/places';
 import { GoogleMapsUrlParser } from './parser';
 import { RateLimiter } from '../utils/rate-limiter';
 import { generateSyntheticPlaceId } from '../utils/crypto';
 import { isLegitimatePlaceTitle, isPlausibleGeoCoordinate } from '../utils/validation';
+import { haversineDistanceMeters } from '../utils/coordinates';
 import { mergePlaceRecords } from '../injected/rpc-unpacker';
 
 export interface SavedListDirectoryEntry {
@@ -27,28 +28,86 @@ export class MapsVirtualScroller {
   private rateLimiter: RateLimiter;
   private currentListTitle: string | null = null;
 
+  public spatialDedupLog: RawSpatialDedupLogEntry[] = [];
+  public domCardSnapshots: RawDomCardSnapshot[] = [];
+
   /**
-   * Spatially deduplicates and merges place records using 5-decimal coordinate keys (~1 meter precision).
+   * Spatially deduplicates and merges place records using 40-meter spatial proximity radius,
+   * textual substring matching, and Place ID correlation.
    */
   private addOrUpdatePlace(record: ScrapedPlaceRecord): boolean {
-    const coordKey = `${record.latitude.toFixed(5)},${record.longitude.toFixed(5)}`;
-    const existingId = this.coordIndex.get(coordKey);
-
-    if (existingId && this.harvestedMap.has(existingId)) {
-      const existing = this.harvestedMap.get(existingId)!;
-      const merged = mergePlaceRecords(existing, record);
-      this.harvestedMap.set(existingId, merged);
-      return false; // Merged with existing record
-    }
-
+    // 1. Direct ID match
     if (this.harvestedMap.has(record.id)) {
       const existing = this.harvestedMap.get(record.id)!;
       const merged = mergePlaceRecords(existing, record);
       this.harvestedMap.set(record.id, merged);
-      this.coordIndex.set(coordKey, record.id);
-      return false; // Merged with existing record
+      return false; // Merged
     }
 
+    // 2. Exact coordinate key fast-path
+    const coordKey = `${record.latitude.toFixed(5)},${record.longitude.toFixed(5)}`;
+    const existingIdFromKey = this.coordIndex.get(coordKey);
+    if (existingIdFromKey && this.harvestedMap.has(existingIdFromKey)) {
+      const existing = this.harvestedMap.get(existingIdFromKey)!;
+      const merged = mergePlaceRecords(existing, record);
+      this.harvestedMap.set(existingIdFromKey, merged);
+      return false; // Merged
+    }
+
+    // 3. Spatial proximity and textual overlap scan (up to 40 meters)
+    for (const [existingId, existing] of this.harvestedMap.entries()) {
+      // 3a. Matching Place ID or Feature ID
+      if (
+        (record.placeId && existing.placeId && record.placeId === existing.placeId) ||
+        (record.featureId && existing.featureId && record.featureId === existing.featureId)
+      ) {
+        const merged = mergePlaceRecords(existing, record);
+        this.harvestedMap.set(existingId, merged);
+        return false;
+      }
+
+      // 3b. Haversine distance
+      const dist = haversineDistanceMeters(record.latitude, record.longitude, existing.latitude, existing.longitude);
+      if (dist <= 40) {
+        const isRecCoord = /^\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?$/.test(record.title);
+        const isExCoord = /^\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?$/.test(existing.title);
+
+        const recTitleLower = record.title.toLowerCase();
+        const exTitleLower = existing.title.toLowerCase();
+        const textOverlap =
+          recTitleLower.includes(exTitleLower) ||
+          exTitleLower.includes(recTitleLower) ||
+          (record.address && existing.address && (record.address.toLowerCase().includes(exTitleLower) || existing.address.toLowerCase().includes(recTitleLower)));
+
+        const oneHasPlaceId = Boolean(record.placeId || existing.placeId);
+        const oneLacksPlaceId = !record.placeId || !existing.placeId;
+
+        // Merge if: sub-meter floating point diff (< 2m), or raw coordinate pin, or text overlap, or DOM vs RPC within 35m
+        if (dist < 2.0 || isRecCoord || isExCoord || textOverlap || (oneHasPlaceId && oneLacksPlaceId && dist <= 35)) {
+          const merged = mergePlaceRecords(existing, record);
+          const primaryId = merged.placeId || existingId;
+          if (primaryId !== existingId) {
+            this.harvestedMap.delete(existingId);
+          }
+          this.harvestedMap.set(primaryId, merged);
+          this.coordIndex.set(coordKey, primaryId);
+
+          this.spatialDedupLog.push({
+            timestamp: new Date().toISOString(),
+            keptTitle: merged.title,
+            mergedTitle: record.title === merged.title ? existing.title : record.title,
+            distanceMeters: Math.round(dist * 10) / 10,
+            keptCoordinates: `${merged.latitude.toFixed(6)}, ${merged.longitude.toFixed(6)}`,
+            mergedCoordinates: `${record.latitude.toFixed(6)}, ${record.longitude.toFixed(6)}`,
+            reason: dist < 2.0 ? 'sub_meter_coord_match' : textOverlap ? 'text_and_spatial_match' : isRecCoord || isExCoord ? 'dropped_pin_coord_match' : 'rpc_dom_spatial_correlation',
+          });
+
+          return false; // Merged
+        }
+      }
+    }
+
+    // 4. Truly new place
     this.harvestedMap.set(record.id, record);
     this.coordIndex.set(coordKey, record.id);
     return true; // Newly added
@@ -56,14 +115,15 @@ export class MapsVirtualScroller {
 
   constructor(containerElement?: HTMLElement, rateLimiter?: RateLimiter) {
     this.container = containerElement || this.findPrimaryContainer();
-    // Fast, responsive extraction delay (300ms - 600ms) for high-speed local DOM harvesting
+    // Measured, deliberate extraction cadence (~1600ms - 2200ms) to allow Google Maps
+    // network batches to cleanly arrive and avoid skipping virtualized elements
     this.rateLimiter =
       rateLimiter ||
       new RateLimiter({
-        minDelayMs: 300,
-        maxDelayMs: 600,
-        coolingIntervalCycles: 70,
-        coolingDurationMs: 1500,
+        minDelayMs: 1600,
+        maxDelayMs: 2200,
+        coolingIntervalCycles: 40,
+        coolingDurationMs: 2500,
       });
   }
 
@@ -178,6 +238,10 @@ export class MapsVirtualScroller {
 
   public getHarvestedCount(): number {
     return this.harvestedMap.size;
+  }
+
+  public getHarvestedPlaces(): ScrapedPlaceRecord[] {
+    return Array.from(this.harvestedMap.values());
   }
 
   /**
@@ -535,7 +599,8 @@ export class MapsVirtualScroller {
       }
 
       const isAtBottom = this.container.scrollTop + this.container.clientHeight >= this.container.scrollHeight - 60;
-      const maxStagnation = expectedCount && this.harvestedMap.size < expectedCount ? 10 : MAX_STAGNATION_LIMIT;
+      const isLargeOrApproximate = isApproximate || (expectedCount !== null && expectedCount !== undefined && expectedCount > 40);
+      const maxStagnation = isLargeOrApproximate ? 12 : MAX_STAGNATION_LIMIT;
 
       // Sentinel or stagnation termination evaluation
       if (this.detectTerminalSentinel() || (isAtBottom && stagnationCycles >= 2)) {
@@ -551,13 +616,13 @@ export class MapsVirtualScroller {
         logCallback?.(
           'warn',
           'RECOVERY',
-          `Ciclo #${cycle}: Extremo visible alcanzado (${this.harvestedMap.size}${expectedCount ? '/' + expectedCount : ''} lugares). Ejecutando micro-scroll para disparar carga de más elementos...`
+          `Ciclo #${cycle}: Extremo visible alcanzado (${this.harvestedMap.size}${expectedCount ? '/' + expectedCount : ''} lugares). Pausando 2s para llegada de paquetes de red y disparando micro-pulso...`
         );
         // Recovery routine: scroll backward slightly then forward to trigger Google intersection observers
-        this.performActiveScroll(-350);
-        await this.rateLimiter.sleep(500);
-        this.performActiveScroll(450);
-        await this.rateLimiter.sleep(1000);
+        this.performActiveScroll(-250);
+        await this.rateLimiter.sleep(800);
+        this.performActiveScroll(350);
+        await this.rateLimiter.sleep(2000);
 
         const recoveryAdded = await this.harvestVisibleElements();
         if (recoveryAdded.length > 0 || this.container.scrollHeight > lastScrollHeight + 50) {
@@ -583,9 +648,9 @@ export class MapsVirtualScroller {
       // Variable downward scroll increment (350px - 520px)
       const variableStep = Math.floor(Math.random() * (520 - 350 + 1)) + 350;
       this.performActiveScroll(variableStep);
-      logCallback?.('info', 'SCROLL', `Ciclo #${cycle}: Scroll +${variableStep}px (Posición: ${Math.round(this.container.scrollTop)}px). Lugares: ${progressLabel}.`);
+      logCallback?.('info', 'SCROLL', `Ciclo #${cycle}: Scroll +${variableStep}px (Posición: ${Math.round(this.container.scrollTop)}px). Lugares: ${progressLabel}. Esperando red...`);
 
-      // Fast, responsive delay (300ms - 550ms)
+      // Measured delay (~1.6s - 2.2s)
       await this.rateLimiter.applyAdaptiveDelay();
     }
   }
@@ -1086,6 +1151,20 @@ export class MapsVirtualScroller {
     );
 
     cardElements.forEach((card) => {
+      // Record raw DOM card snapshot for diagnostic logging
+      if (this.domCardSnapshots.length < 50) {
+        this.domCardSnapshots.push({
+          timestamp: new Date().toISOString(),
+          cardIndex: this.domCardSnapshots.length,
+          rawText: (card.innerText || '').slice(0, 300),
+          dataItemId: card.getAttribute('data-item-id') || undefined,
+          jsdata: card.getAttribute('jsdata') || undefined,
+          dataLat: card.getAttribute('data-lat') || undefined,
+          dataLng: card.getAttribute('data-lng') || undefined,
+          childHref: card.querySelector('a')?.getAttribute('href') || undefined,
+        });
+      }
+
       const titleEl = card.querySelector<HTMLElement>('.fontHeadlineSmall, .qBF1Pd, [role="heading"], span.OSrXXb');
       const rawTitle = titleEl?.textContent?.trim() || card.getAttribute('aria-label') || '';
       const title = rawTitle.replace(/\s*\+\s*nota\b/i, '').replace(/\s*\+\s*note\b/i, '').trim();
@@ -1278,5 +1357,13 @@ export class MapsVirtualScroller {
       'hai raggiunto la fine',
     ];
     return sentinels.some((s) => text.includes(s));
+  }
+
+  public getSpatialDedupLog(): RawSpatialDedupLogEntry[] {
+    return this.spatialDedupLog;
+  }
+
+  public getDomCardSnapshots(): RawDomCardSnapshot[] {
+    return this.domCardSnapshots;
   }
 }

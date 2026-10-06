@@ -12,7 +12,7 @@ import type {
   MutationOptions,
   MutationProgressStats,
 } from '../types/messages';
-import type { MutationItemPayload, ScrapedPlaceRecord } from '../types/places';
+import type { MutationItemPayload, ScrapedPlaceRecord, RawRpcLogEntry, RawDiagnosticDump } from '../types/places';
 import { CrossWorldBridge } from './bridge';
 import { BatchexecuteUnpacker } from '../injected/rpc-unpacker';
 import { MapsVirtualScroller } from './scroller';
@@ -149,6 +149,7 @@ bridge.onAuth((payload) => {
 
 // In-memory cache of authentic places intercepted from Google Maps list RPCs
 const preHarvestedRpcPlaces = new Map<string, ScrapedPlaceRecord>();
+const rawRpcEntries: RawRpcLogEntry[] = [];
 
 // Active list fingerprint to isolate RPC caches between different lists
 function getActiveListFingerprint(): string {
@@ -180,6 +181,22 @@ setInterval(checkListSwitch, 1000);
 // Forward intercepted Batchexecute RPC payloads to Service Worker
 bridge.onRpc((payload) => {
   const places = BatchexecuteUnpacker.deepExtractPlaces(payload.parsedPayload || []);
+
+  // Record raw RPC entry for diagnostics (ring buffer up to 60)
+  if (rawRpcEntries.length >= 60) {
+    rawRpcEntries.shift();
+  }
+  rawRpcEntries.push({
+    timestamp: new Date().toISOString(),
+    endpoint: payload.endpoint,
+    method: payload.method,
+    rpcId: payload.rpcId,
+    rawBodyLength: typeof payload.rawBody === 'string' ? payload.rawBody.length : 0,
+    rawBodySnippet: typeof payload.rawBody === 'string' ? payload.rawBody.slice(0, 1500) : '',
+    extractedPlacesCount: places.length,
+    extractedPlacesSummary: places.map((p) => ({ id: p.id, title: p.title, lat: p.latitude, lng: p.longitude })),
+  });
+
   if (places.length > 0) {
     console.log(`[Content Script] Intercepted ${places.length} places from RPC (${payload.rpcId || 'network'}).`);
 
@@ -526,5 +543,25 @@ function handleWorkerMessage(msg: WorkerToContentMessage): void {
         pendingFallbackApprovalResolve = null;
       }
       break;
+
+    case 'CMD_REQUEST_RAW_DIAGNOSTIC_DATA': {
+      const dump: RawDiagnosticDump = {
+        dumpGeneratedAt: new Date().toISOString(),
+        activeUrl: window.location.href,
+        currentListTitle: currentListFingerprint || null,
+        totalHarvestedPlaces: activeScroller ? activeScroller.getHarvestedCount() : preHarvestedRpcPlaces.size,
+        rawRpcCount: rawRpcEntries.length,
+        rawRpcEntries,
+        spatialDedupLog: activeScroller ? activeScroller.getSpatialDedupLog() : [],
+        domCardSnapshots: activeScroller ? activeScroller.getDomCardSnapshots() : [],
+        harvestedPlaces: activeScroller ? activeScroller.getHarvestedPlaces() : Array.from(preHarvestedRpcPlaces.values()),
+      };
+      pipelinePort?.postMessage({
+        type: 'RAW_DIAGNOSTIC_DATA_REPORT',
+        payload: dump,
+      } as ContentToWorkerMessage);
+      break;
+    }
   }
 }
+

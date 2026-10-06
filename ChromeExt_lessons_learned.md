@@ -28,6 +28,7 @@ Este documento recopila los incidentes, errores y discrepancias encontrados dura
 20. [Fusión Espacial por Coordenadas, Aislamiento de Caché Inter-Listas, Filtrado de Artefactos Protobuf/Pegman y Desbloqueo de Feeds Virtuales Profundos](#20-fusión-espacial-por-coordenadas-aislamiento-de-caché-inter-listas-filtrado-de-artefactos-protobufpegman-y-desbloqueo-de-feeds-virtuales-profundos)
 21. [La Falacia del Límite de Strings, Extracción de Metadatos de Fotos como Lugares Falsos y Eliminación de Coordenadas Fantasma con Latitud Entera](#21-la-falacia-del-límite-de-strings-extracción-de-metadatos-de-fotos-como-lugares-falsos-y-eliminación-de-coordenadas-fantasma-con-latitud-entera)
 22. [Bounding Boxes como Colecciones Falsas, Fuga de Tokens Fotográficos de 11 Caracteres y Detección de Listas del Sistema en el Hub](#22-bounding-boxes-como-colecciones-falsas-fuga-de-tokens-fotográficos-de-11-caracteres-y-detección-de-listas-del-sistema-en-el-hub)
+23. [Deduplicación Espacial por Radio de Proximidad (35m), Cadencia de Red de 2s vs Clics Destructivos, Limpieza de Prefijos de Coordenadas y Volcado de Diagnóstico Crudo (Raw Data Log)](#23-deduplicación-espacial-por-radio-de-proximidad-35m-cadencia-de-red-de-2s-vs-clics-destructivos-limpieza-de-prefijos-de-coordenadas-y-volcado-de-diagnóstico-crudo-raw-data-log)
 
 ---
 
@@ -706,3 +707,48 @@ En listas grandes (como **"Sitios destacados"** con *"Más de 200 sitios"*):
 >    - Todo token mono-palabra que contenga dígitos y letras mezcladas sin puntuación gramatical ni palabras en diccionario debe ser descalificado como título de lugar.
 > 4. **Garantía Atómica de Persistencia en el Cierre de Extracción:**
 >    - En arquitecturas distribuidas de extensiones de navegador (Content Script $\leftrightarrow$ Background Service Worker $\leftrightarrow$ Side Panel), el evento de finalización (`EXTRACTION_COMPLETED`) debe sincronizar atómicamente la lista final completa en el almacén de estado central (`StateManager`) y notificar inmediatamente a la UI con `ITEMS_HARVESTED_UPDATE` antes de permitir cualquier operación de exportación.
+
+---
+
+## 23. Deduplicación Espacial por Radio de Proximidad (35m), Cadencia de Red de 2s vs Clics Destructivos, Limpieza de Prefijos de Coordenadas y Volcado de Diagnóstico Crudo (Raw Data Log)
+
+### Síntoma / Error
+1. **Lugares Duplicados a Poca Distancia (<20m) en el Archivo Exportado:**
+   Al exportar listas de lugares (ej. *Sitios destacados*), ciertas entidades aparecían dos veces con coordenadas ligeramente distintas (~9m a 18m) y títulos complementarios:
+   - Fila A (de RPC): `Teodoro García 2380` (`-34.568914, -58.445007`, con Place ID `ChIJ...`).
+   - Fila B (de DOM): `Teodoro García 2380, C1426 Cdad. Autónoma de Buenos Aires` (`-34.568909, -58.445104`, sin Place ID).
+   - De igual modo para `B1661IEK Bella Vista` vs `Moine 723, B1661IEK Bella Vista...` (~18m de diferencia) o dropped pins con variaciones submétricas por redondeo flotante (`-34.533075499...` vs `-34.533075`, diferencia de 6 cm).
+2. **Pines Internacionales Exportados como Coordenadas Crudas con el País en la Nota de Usuario:**
+   Entidades geográficas legítimas (ciudades, territorios o países como *Turkmenistán*, *Vietnam*, *Cuba*, *Afganistán*, *Svalbard y Jan Mayen*, *Seychelles*) aparecían en el Excel tituladas como `(40.252596, 58.439703)` y en la columna de *Personal User Note* se colaba `(40.252596, 58.439703)Turkmenistán`, a pesar de que el usuario nunca escribió esa nota.
+3. **Corte Prematuro en Listas Profundas (53 lugares en vez de 200+):**
+   Al recorrer feeds virtualizados masivos, la extensión se desplazaba demasiado rápido (300ms a 500ms por ciclo), alcanzando el extremo visible antes de que los paquetes `batchexecute` de Google Maps retornaran del servidor, abortando por estancamiento aparente con solo una fracción del total.
+
+### Causa Raíz
+1. **La Trampa de la Grilla Rígida de Coordenadas (`toFixed(5)`):**
+   - El índice espacial usaba una clave alfanumérica exacta: `${lat.toFixed(5)},${lng.toFixed(5)}` (~1.1 metros).
+   - Google Maps asigna las coordenadas del POI en la base de datos para el RPC, mientras que en la tarjeta DOM HTML inyecta la coordenada geocodificada de la dirección a nivel de calle (diferencia típica de 8 a 25 metros entre la entrada y el centroide del edificio).
+   - Al diferir en 10 metros, las claves `coordKey` no coincidían, los identificadores eran distintos (Place ID `ChIJ...` vs hash sintético de DOM), y el sistema insertaba dos filas separadas.
+2. **La Trampa de Formato de Pins de Google (`(lat, lng)País`):**
+   - Cuando un usuario guarda un pin en una región sin dirección de calle exacta, Google Maps sintetiza la etiqueta `(lat, lng)País` o envía arrays con `(lat, lng)` y el nombre del territorio adyacente.
+   - El extractor RPC asignaba primero el string de coordenadas como `title`. Al encontrar luego `(lat, lng)País`, el código veía que `title` ya estaba asignado y lo relegaba a `userNote` creyendo que era una nota personal escrita por el usuario.
+3. **Desincronización entre la Velocidad de Scroll y la Latencia de Red:**
+   - La paginación en Google Maps es asíncrona: cada solicitud de bloque toma entre 800ms y 1800ms. Un ciclo de scroll de 300ms agotaba los intentos de recuperación antes de que la respuesta llegara a la pestaña.
+   - Clicar secuencialmente en cada tarjeta de lugar para abrir su ficha no es viable porque navega fuera de la lista virtual a la vista de detalle y requiere pulsar "Atrás" repetidamente (lo cual en 200 lugares llevaría >13 minutos y reinicia la posición del scroll).
+
+### Enseñanza Generalizable
+> [!IMPORTANT]
+> **Fusión Espacial por Radio de Tolerancia, Ritmo Medido y Auditoría Forense**:
+> 1. **Deduplicación Espacial con Radio de Proximidad Haversine (35–40 metros):**
+>    - Nunca confíes en comparaciones de cadenas exactas para coordenadas decimales (`toFixed(5)`).
+>    - Aplica una distancia geodésica (fórmula de Haversine o aproximación euclidiana corregida por latitud).
+>    - Si la distancia es $\le 40$ metros y existe coincidencia de subcadena en el título/dirección, o uno de los registros es un marcador huérfano con coordenadas crudas, o provienen de fuentes complementarias (RPC + DOM), **fusiona atómicamente ambos registros**: conserva el Place ID oficial, el nombre corto como Título y la dirección larga como Dirección.
+> 2. **Depuración de Prefijos de Coordenadas y Promoción de Entidades Geográficas:**
+>    - Limpia sistemáticamente expresiones como `^\(?\s*-?\d{1,3}\.\d+[\s,]+-?\d{1,3}\.\d+\s*\)?\s*` de las cadenas Protobuf.
+>    - Si el título actual es una coordenada numérica y se descubre un nombre geográfico válido (*Turkmenistán*, *Cuba*), **promueve de inmediato el nombre a Título**.
+>    - Rechaza categóricamente que etiquetas sintéticas que inicien con coordenadas sean clasificadas como `userNote`.
+> 3. **Cadencia Deliberada de 1.8s - 2.0s por Ciclo para Virtual Feeds Profundos:**
+>    - En SPAs masivas con paginación debounced, la velocidad es enemiga de la completitud. Una cadencia de ~1.8s a 2.2s por ciclo otorga el tiempo necesario para que las respuestas `batchexecute` se descarguen y los observadores virtuales del DOM monten los nuevos lotes.
+>    - Ante el fin aparente de la lista, permite hasta 10–12 ciclos de paciencia con micro-pulsos de scroll antes de declarar finalización.
+> 4. **Exportación Forense Transparente (Raw Data Log JSON):**
+>    - Las extensiones complejas deben proporcionar un mecanismo directo para que el usuario o desarrollador exporte un volcado crudo (`Raw Data Log`) con las cargas útiles JSON interceptadas de la red, los snapshots de tarjetas DOM, las trazas de deduplicación espacial y el log de auditoría cronológico, eliminando conjeturas forenses.
+

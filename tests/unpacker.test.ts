@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { BatchexecuteUnpacker } from '../src/injected/rpc-unpacker';
+import { BatchexecuteUnpacker, mergePlaceRecords } from '../src/injected/rpc-unpacker';
 
 describe('BatchexecuteUnpacker', () => {
   it('strips anti-XSSI security prefix and unpacks line-delimited batchexecute chunks', () => {
@@ -151,17 +151,15 @@ describe('BatchexecuteUnpacker', () => {
     expect(extracted[0].longitude).toBeCloseTo(-58.94943, 4);
   });
 
-  it('correctly extracts unnamed dropped pins whose titles are raw coordinates (e.g. Turkmenistan pin)', () => {
-    const mockTurkmenistanPin = [
+  it('correctly extracts unnamed dropped pins whose titles are raw coordinates (e.g. pure coordinate pin)', () => {
+    const mockPureCoordPin = [
       '(40.252596, 58.439703)',
-      'Turkmenistán',
       [[null, null, 40.252596, 58.439703]],
     ];
 
-    const extracted = BatchexecuteUnpacker.deepExtractPlaces([mockTurkmenistanPin]);
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces([mockPureCoordPin]);
     expect(extracted.length).toBe(1);
     expect(extracted[0].title).toBe('(40.252596, 58.439703)');
-    expect(extracted[0].address).toBe('Turkmenistán');
     expect(extracted[0].latitude).toBeCloseTo(40.252596, 5);
     expect(extracted[0].longitude).toBeCloseTo(58.439703, 5);
   });
@@ -332,6 +330,53 @@ describe('BatchexecuteUnpacker', () => {
     expect(extracted[0].title).not.toBe('5XdUApWbscM');
     expect(extracted[0].latitude).toBeCloseTo(3.156948, 5);
     expect(extracted[0].longitude).toBeCloseTo(101.712303, 5);
+  });
+
+  it('strips coordinate prefixes and promotes country names over raw coordinates, preventing pin label from polluting userNote', () => {
+    const mockDroppedPinWithCountry = [
+      'entity_container',
+      [
+        '0x0:0x894e2baaf1d550b0',
+        ['(40.252596, 58.439703)', '(40.252596, 58.439703)Turkmenistán'],
+        null,
+        [[null, null, 40.252596, 58.439703]],
+      ],
+    ];
+
+    const extracted = BatchexecuteUnpacker.deepExtractPlaces(mockDroppedPinWithCountry);
+    expect(extracted.length).toBe(1);
+    expect(extracted[0].title).toBe('Turkmenistán');
+    expect(extracted[0].userNote).toBeUndefined();
+    expect(extracted[0].latitude).toBeCloseTo(40.252596, 5);
+    expect(extracted[0].longitude).toBeCloseTo(58.439703, 5);
+  });
+
+  it('merges places with substring titles, keeping short title and full address', () => {
+    const rpcPlace = {
+      id: 'ChIJf2_i-mu1vJUR-eniY4TKFa4',
+      title: 'Teodoro García 2380',
+      url: 'https://www.google.com/maps/place/?q=-34.568914,-58.445007',
+      latitude: -34.568914,
+      longitude: -58.445007,
+      isHighPrecision: true,
+      placeId: 'ChIJf2_i-mu1vJUR-eniY4TKFa4',
+      extractedAt: new Date().toISOString(),
+    };
+
+    const domPlace = {
+      id: 'synthetic_123',
+      title: 'Teodoro García 2380, C1426 Cdad. Autónoma de Buenos Aires',
+      url: 'https://www.google.com/maps/place/?q=-34.568909,-58.445104',
+      latitude: -34.568909,
+      longitude: -58.445104,
+      isHighPrecision: true,
+      extractedAt: new Date().toISOString(),
+    };
+
+    const merged = mergePlaceRecords(domPlace, rpcPlace);
+    expect(merged.title).toBe('Teodoro García 2380');
+    expect(merged.address).toBe('Teodoro García 2380, C1426 Cdad. Autónoma de Buenos Aires');
+    expect(merged.placeId).toBe('ChIJf2_i-mu1vJUR-eniY4TKFa4');
   });
 
   it('fails gracefully on empty or malformed strings without throwing', () => {

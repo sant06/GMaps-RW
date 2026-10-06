@@ -174,3 +174,52 @@ export interface CsvPlaceRow {
   Precision_Type: string;
   Extracted_At: string;
 }
+
+// ============================================================================
+// RAW DIAGNOSTIC AUDIT LOG STRUCTURES
+// ============================================================================
+
+export interface RawRpcLogEntry {
+  timestamp: string;
+  endpoint: string;
+  method: string;
+  rpcId?: string;
+  rawBodyLength: number;
+  rawBodySnippet: string;
+  extractedPlacesCount: number;
+  extractedPlacesSummary: Array<{ id: string; title: string; lat: number; lng: number }>;
+}
+
+export interface RawSpatialDedupLogEntry {
+  timestamp: string;
+  keptTitle: string;
+  mergedTitle: string;
+  distanceMeters: number;
+  keptCoordinates: string;
+  mergedCoordinates: string;
+  reason: string;
+}
+
+export interface RawDomCardSnapshot {
+  timestamp: string;
+  cardIndex: number;
+  rawText: string;
+  dataItemId?: string;
+  jsdata?: string;
+  dataLat?: string;
+  dataLng?: string;
+  childHref?: string;
+}
+
+export interface RawDiagnosticDump {
+  dumpGeneratedAt: string;
+  activeUrl: string;
+  currentListTitle: string | null;
+  totalHarvestedPlaces: number;
+  rawRpcCount: number;
+  rawRpcEntries: RawRpcLogEntry[];
+  spatialDedupLog: RawSpatialDedupLogEntry[];
+  domCardSnapshots: RawDomCardSnapshot[];
+  harvestedPlaces: ScrapedPlaceRecord[];
+  auditLogs?: Array<{ timestamp: number | string; level: string; tag: string; message: string }>;
+}

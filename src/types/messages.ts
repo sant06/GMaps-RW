@@ -5,7 +5,7 @@
  * 3. Side Panel UI <-> Background Service Worker via chrome.runtime.Port ('GMAPS_SIDEPANEL')
  */
 
-import type { ScrapedPlaceRecord, GoogleMapsListSummary, MutationItemPayload, MutationResult } from './places';
+import type { ScrapedPlaceRecord, GoogleMapsListSummary, MutationItemPayload, MutationResult, RawDiagnosticDump } from './places';
 import type { AmbientAuthContext, BatchexecuteReplayRequest, BatchexecuteReplayResponse } from './rpc';
 
 // ============================================================================
@@ -176,7 +176,8 @@ export type ContentToWorkerMessage =
   | { type: 'MUTATION_ITEM_RESULT'; payload: { item: MutationItemPayload; result: MutationResult } }
   | { type: 'MUTATION_FALLBACK_PROMPT_REQUIRED'; payload: { item: MutationItemPayload; rpcError: string } }
   | { type: 'MUTATION_COMPLETED'; payload: { summary: MutationProgressStats } }
-  | { type: 'MUTATION_ERROR'; payload: PipelineErrorMessage };
+  | { type: 'MUTATION_ERROR'; payload: PipelineErrorMessage }
+  | { type: 'RAW_DIAGNOSTIC_DATA_REPORT'; payload: RawDiagnosticDump };
 
 export type WorkerToContentMessage =
   | { type: 'HEARTBEAT_PONG'; payload: HeartbeatPayload }
@@ -189,7 +190,8 @@ export type WorkerToContentMessage =
   | { type: 'CMD_PAUSE_MUTATION' }
   | { type: 'CMD_RESUME_MUTATION' }
   | { type: 'CMD_ABORT_MUTATION' }
-  | { type: 'CMD_INSPECT_DOM_STATE' };
+  | { type: 'CMD_INSPECT_DOM_STATE' }
+  | { type: 'CMD_REQUEST_RAW_DIAGNOSTIC_DATA' };
 
 // ============================================================================
 // 3. SIDEPANEL <-> SERVICE WORKER CONTRACT
@@ -209,7 +211,8 @@ export type SidePanelToWorkerMessage =
   | { type: 'REQUEST_RESUME_MUTATION' }
   | { type: 'REQUEST_ABORT_MUTATION' }
   | { type: 'CLEAR_ACTIVE_SESSION' }
-  | { type: 'FETCH_KNOWN_LISTS' };
+  | { type: 'FETCH_KNOWN_LISTS' }
+  | { type: 'REQUEST_RAW_DIAGNOSTIC_DATA' };
 
 export type WorkerToSidePanelMessage =
   | { type: 'STATE_SNAPSHOT'; payload: PipelineStateSnapshot }
@@ -221,7 +224,8 @@ export type WorkerToSidePanelMessage =
   | { type: 'MUTATION_FALLBACK_REQUESTED'; payload: { item: MutationItemPayload; reason: string } }
   | { type: 'OPERATION_FINISHED'; payload: { operation: 'extraction' | 'mutation'; success: boolean; message: string } }
   | { type: 'LOG_ENTRY'; payload: LogEntryMessage }
-  | { type: 'KNOWN_LISTS_UPDATE'; payload: GoogleMapsListSummary[] };
+  | { type: 'KNOWN_LISTS_UPDATE'; payload: GoogleMapsListSummary[] }
+  | { type: 'RAW_DIAGNOSTIC_DATA_RESPONSE'; payload: RawDiagnosticDump };
 
 export interface LogEntryMessage {
   level: 'info' | 'warn' | 'error' | 'debug';

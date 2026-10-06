@@ -211,6 +211,13 @@ export class PortManager {
         });
         await this.broadcastStateSnapshot();
         break;
+
+      case 'RAW_DIAGNOSTIC_DATA_REPORT':
+        this.sendToSidePanel({
+          type: 'RAW_DIAGNOSTIC_DATA_RESPONSE',
+          payload: msg.payload,
+        });
+        break;
     }
   }
 
@@ -305,6 +312,29 @@ export class PortManager {
         await StateManager.clearHarvestedPlaces();
         await StateManager.updatePipelineStatus('idle');
         await this.broadcastStateSnapshot();
+        break;
+
+      case 'REQUEST_RAW_DIAGNOSTIC_DATA':
+        if (this.contentPort) {
+          this.sendToContent({ type: 'CMD_REQUEST_RAW_DIAGNOSTIC_DATA' });
+        } else {
+          const places = await StateManager.getHarvestedPlaces();
+          const session = await StateManager.getSessionState();
+          this.sendToSidePanel({
+            type: 'RAW_DIAGNOSTIC_DATA_RESPONSE',
+            payload: {
+              dumpGeneratedAt: new Date().toISOString(),
+              activeUrl: 'about:blank',
+              currentListTitle: session.extractionProgress?.activeListName || null,
+              totalHarvestedPlaces: places.length,
+              rawRpcCount: 0,
+              rawRpcEntries: [],
+              spatialDedupLog: [],
+              domCardSnapshots: [],
+              harvestedPlaces: places,
+            },
+          });
+        }
         break;
     }
   }

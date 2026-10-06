@@ -42,6 +42,7 @@ const btnExportExcel = document.getElementById('btn-export-excel') as HTMLButton
 const btnExportGeoJson = document.getElementById('btn-export-geojson') as HTMLButtonElement;
 const btnExportKml = document.getElementById('btn-export-kml') as HTMLButtonElement;
 const btnExportCsv = document.getElementById('btn-export-csv') as HTMLButtonElement;
+const btnExportRawJson = document.getElementById('btn-export-raw-json') as HTMLButtonElement;
 
 // Mutation elements
 const fileImportInput = document.getElementById('file-import-input') as HTMLInputElement;
@@ -247,6 +248,28 @@ function handleWorkerMessage(msg: WorkerToSidePanelMessage): void {
         resetMutationUiState();
       }
       break;
+
+    case 'RAW_DIAGNOSTIC_DATA_RESPONSE': {
+      const dump = msg.payload;
+      // Enrich with current audit terminal messages
+      const lines: Array<{ timestamp: string; level: string; tag: string; message: string }> = [];
+      if (elLogTerminal) {
+        elLogTerminal.querySelectorAll('.log-line').forEach((el) => {
+          lines.push({
+            timestamp: new Date().toISOString(),
+            level: el.className.replace('log-line log-', ''),
+            tag: 'AUDIT',
+            message: el.textContent || '',
+          });
+        });
+      }
+      dump.auditLogs = lines;
+      const blob = SpatialDataExporters.toRawDiagnosticJson(dump);
+      const fileName = `gmaps_raw_diagnostic_${Date.now()}.json`;
+      SpatialDataExporters.triggerDownload(blob, fileName);
+      logEntry('info', `Descargado registro de datos crudos (${dump.rawRpcCount} RPCs, ${dump.harvestedPlaces.length} lugares, ${dump.spatialDedupLog.length} fusiones espaciales).`);
+      break;
+    }
   }
 }
 
@@ -268,6 +291,7 @@ function updateExportButtonsState(): void {
   if (btnExportGeoJson) btnExportGeoJson.disabled = !hasItems;
   if (btnExportKml) btnExportKml.disabled = !hasItems;
   if (btnExportCsv) btnExportCsv.disabled = !hasItems;
+  if (btnExportRawJson) btnExportRawJson.disabled = !hasItems;
 }
 
 function logEntry(level: 'info' | 'warn' | 'error' | 'debug', text: string): void {
@@ -391,6 +415,11 @@ btnExportCsv?.addEventListener('click', () => {
   const fileName = `google_maps_export_${Date.now()}.csv`;
   SpatialDataExporters.triggerDownload(blob, fileName);
   logEntry('info', `Exported ${items.length} places to CSV.`);
+});
+
+btnExportRawJson?.addEventListener('click', () => {
+  logEntry('info', 'Solicitando registro de datos crudos (JSON) y auditoría forense...');
+  backgroundPort?.postMessage({ type: 'REQUEST_RAW_DIAGNOSTIC_DATA' } as SidePanelToWorkerMessage);
 });
 
 // ============================================================================

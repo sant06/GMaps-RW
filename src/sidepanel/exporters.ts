@@ -4,7 +4,7 @@
  */
 
 import * as XLSX from 'xlsx';
-import type { ScrapedPlaceRecord, ExcelPlaceRow } from '../types/places';
+import type { ScrapedPlaceRecord, ExcelPlaceRow, RawDiagnosticDump } from '../types/places';
 
 export class SpatialDataExporters {
   /**
@@ -250,6 +250,15 @@ ${placemarks}
 
     const csvBody = [headers.join(','), ...rows.map((row) => row.join(','))].join('\r\n');
     return new Blob([csvBody], { type: 'text/csv;charset=utf-8' });
+  }
+
+  /**
+   * Serializes raw RPC intercepted payloads, DOM card snapshots, spatial deduplication traces,
+   * and harvested places into an indented JSON blob for forensic audit and diagnostic inspection.
+   */
+  public static toRawDiagnosticJson(data: RawDiagnosticDump): Blob {
+    const jsonString = JSON.stringify(data, null, 2);
+    return new Blob([jsonString], { type: 'application/json;charset=utf-8' });
   }
 
   /**
